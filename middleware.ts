@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getIronSession } from 'iron-session';
-import { sessionOptions, type SessionData } from './lib/auth';
+// Import session config from lib/session (no native deps) — NOT lib/auth, which pulls in
+// @node-rs/argon2 and cannot load in the Edge runtime the middleware bundles into.
+import { sessionOptions, type SessionData } from './lib/session';
 
 // Gate every UI route behind a valid session (FR-AUTH-2). A request without a valid
 // session cookie is redirected to /login.

@@ -1,8 +1,9 @@
 import { hash, verify } from '@node-rs/argon2';
-import { unsealData, type SessionOptions } from 'iron-session';
+import { unsealData } from 'iron-session';
 import { randomBytes } from 'node:crypto';
 import { getDb } from '../db/client';
 import { nowIso } from './time';
+import { sessionOptions, type SessionData } from './session';
 
 // ── Auth layer (FR-AUTH-1, FR-AUTH-2) ────────────────────────────────────────
 // Two independent credentials:
@@ -12,27 +13,11 @@ import { nowIso } from './time';
 // The private-flag READ gate lives here too: `isSessionRequest()` answers "does this
 // request carry a valid session cookie?", which P6's listTickets/getTicket turn into
 // `includePrivate`.
-
-// ── Session payload ───────────────────────────────────────────────────────────
-// The only thing we store in the encrypted cookie. There is NO session table —
-// the sealed cookie IS the session (FR-AUTH-2, OQ-P3).
-export interface SessionData {
-  user?: string;
-}
-
-export const sessionOptions: SessionOptions = {
-  cookieName: 'mot_session',
-  // MOT_SESSION_SECRET is the cookie encryption key. The dev fallback is intentionally
-  // obvious so a missing secret surfaces as "change this in production", not silent weak crypto.
-  password:
-    process.env.MOT_SESSION_SECRET ?? 'dev-secret-change-this-in-production-please',
-  ttl: 24 * 60 * 60, // 24h (FR-AUTH-2 default)
-  cookieOptions: {
-    secure: process.env.NODE_ENV === 'production',
-    httpOnly: true,
-    sameSite: 'lax',
-  },
-};
+//
+// The session cookie config + payload type live in lib/session.ts (no native deps) so the Edge
+// middleware can import them without dragging in @node-rs/argon2. We re-export both here so every
+// existing `from '../lib/auth'` import of sessionOptions / SessionData keeps resolving unchanged.
+export { sessionOptions, type SessionData };
 
 // ── API-key bootstrap (FR-AUTH-1, Auth Wiring) ────────────────────────────────
 // Runs ONCE at server boot (from instrumentation.ts), never per-request.
