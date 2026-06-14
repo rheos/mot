@@ -1,7 +1,7 @@
-import { cookies } from 'next/headers';
-import { getIronSession } from 'iron-session';
-import { sessionOptions, verifyCredentials, type SessionData } from '../../../../lib/auth';
+import { sealData } from 'iron-session';
+import { sessionOptions, verifyCredentials } from '../../../../lib/auth';
 import { withBasePath } from '../../../../lib/client/base-path';
+import { serializeSessionCookie } from '../../../../lib/session';
 
 // POST /api/auth/login — verify env-var credentials, set the iron-session cookie, redirect.
 //
@@ -12,19 +12,34 @@ import { withBasePath } from '../../../../lib/client/base-path';
 export async function POST(req: Request): Promise<Response> {
   const { username, password } = await readCredentials(req);
 
-  // withBasePath keeps the 303 inside the sub-path (e.g. /mot) behind the reverse proxy; no-op at
-  // root. req.url is origin-relative here (Next does not carry basePath into a route handler's
-  // req.url), so a bare '/login' / '/' would redirect the browser out of the mounted app.
   const ok = await verifyCredentials(username, password);
   if (!ok) {
-    return Response.redirect(new URL(withBasePath('/login?error=1'), req.url), 303);
+    // Relative, path-only Location so the browser resolves it against the EXTERNAL host
+    // (example.com/mot), not the internal origin a route handler's req.url reports behind the
+    // reverse proxy. withBasePath yields '/mot/login?error=1' in prod, '/login?error=1' at root.
+    return new Response(null, {
+      status: 303,
+      headers: { Location: withBasePath('/login?error=1') },
+    });
   }
 
-  const session = await getIronSession<SessionData>(cookies(), sessionOptions);
-  session.user = username;
-  await session.save();
+  // Seal the session and attach it as an explicit Set-Cookie on the response we return.
+  // getIronSession(cookies(), …) + save() writes the cookie into Next's request store, which
+  // a hand-built Response returned from `next start` does NOT reliably carry — so we seal here
+  // and ship the cookie on the SAME 303 as the redirect. serializeSessionCookie derives every
+  // attribute from sessionOptions (single source of truth — no literals).
+  const sealed = await sealData(
+    { user: username },
+    { password: sessionOptions.password as string, ttl: sessionOptions.ttl },
+  );
 
-  return Response.redirect(new URL(withBasePath('/'), req.url), 303);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      Location: withBasePath('/'),
+      'Set-Cookie': serializeSessionCookie(sealed),
+    },
+  });
 }
 
 async function readCredentials(

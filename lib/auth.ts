@@ -91,16 +91,26 @@ export function unauthorized(): Response {
 }
 
 // ── UI password bootstrap (FR-AUTH-2) ─────────────────────────────────────────
-// The password is env-only: argon2-hashed at boot into module memory (never the DB,
-// never compared plaintext). verifyPassword() compares a login candidate against it.
+// The password is env-only: argon2-hashed into module memory (never the DB, never
+// compared plaintext). verifyCredentials() compares a login candidate against it.
+//
+// boot calls bootstrapUiCredentials() once from instrumentation.ts, but in `next start`
+// Next bundles instrumentation SEPARATELY from the route handlers, so the lib/auth module
+// instance the login route imports may have never run boot (_uiInitialized === false). We
+// therefore lazily self-initialize from process.env on first verify — process.env IS
+// available in route handlers at runtime — so login works in whichever bundle/module
+// instance the handler runs in. (The API key avoids this because it lives in the app_secret
+// DB row, not module memory; that asymmetry is what made login the only thing that broke.)
 let _uiUsername: string | null = null;
 let _uiPasswordHash: string | null = null;
+let _uiInitialized = false;
 
 export async function bootstrapUiCredentials(): Promise<void> {
   _uiUsername = process.env.MOT_UI_USERNAME?.trim() || null;
   const pw = process.env.MOT_UI_PASSWORD;
   // Phase 1 password policy: any non-empty value (OQ-P3). Empty/absent → login disabled.
   _uiPasswordHash = pw ? await hash(pw) : null;
+  _uiInitialized = true;
 }
 
 // Verify a login attempt. Same boolean answer regardless of which field was wrong —
@@ -109,6 +119,8 @@ export async function verifyCredentials(
   username: string,
   password: string,
 ): Promise<boolean> {
+  // Self-init if boot ran in a different bundle/module instance (the prod login bug).
+  if (!_uiInitialized) await bootstrapUiCredentials();
   if (!_uiUsername || !_uiPasswordHash) return false;
   if (username !== _uiUsername) {
     // Still run a verify against the stored hash to keep timing roughly constant, then fail.

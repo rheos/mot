@@ -1,7 +1,5 @@
-import { cookies } from 'next/headers';
-import { getIronSession } from 'iron-session';
-import { sessionOptions, type SessionData } from '../../../../lib/auth';
 import { withBasePath } from '../../../../lib/client/base-path';
+import { clearSessionCookie } from '../../../../lib/session';
 
 // POST /api/auth/logout — destroy the session cookie and redirect to /login.
 //
@@ -9,10 +7,15 @@ import { withBasePath } from '../../../../lib/client/base-path';
 // so a still-valid copy of the cookie remains replayable until its TTL lapses. This is
 // acceptable for the single-user Phase 1 surface (spec: Auth Wiring, logout semantics).
 // Do NOT add a session revocation table.
-export async function POST(req: Request): Promise<Response> {
-  const session = await getIronSession<SessionData>(cookies(), sessionOptions);
-  session.destroy();
-  // withBasePath keeps the 303 inside the sub-path (e.g. /mot) behind the reverse proxy; no-op at
-  // root. See the login route for why req.url alone drops the basePath.
-  return Response.redirect(new URL(withBasePath('/login'), req.url), 303);
+export async function POST(): Promise<Response> {
+  // Relative, path-only Location (see login route): the browser resolves it against the
+  // external host, not the internal origin req.url reports behind the proxy. The expired
+  // Set-Cookie clears mot_session on the same response that redirects.
+  return new Response(null, {
+    status: 303,
+    headers: {
+      Location: withBasePath('/login'),
+      'Set-Cookie': clearSessionCookie(),
+    },
+  });
 }
