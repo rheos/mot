@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
+    "@paralleldrive/cuid2": "^3.3.0",
     "better-sqlite3": "^11.10.0",
     "drizzle-orm": "^0.29.5",
     "iron-session": "^8.0.4",
