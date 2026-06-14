@@ -11,4 +11,7 @@ export async function register(): Promise<void> {
   const { bootstrapApiKey, bootstrapUiCredentials } = await import('./lib/auth');
   await bootstrapApiKey();
   await bootstrapUiCredentials();
+  // Nightly DB backup (FR-DB-2): register the 02:00 VACUUM INTO cron once at boot.
+  const { scheduleNightly } = await import('./lib/backup');
+  scheduleNightly();
 }

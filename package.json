@@ -21,6 +21,7 @@
     "drizzle-orm": "^0.29.5",
     "iron-session": "^8.0.4",
     "next": "^14.2.35",
+    "node-cron": "^4.2.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod": "^3.25.76"
@@ -29,6 +30,7 @@
     "@playwright/test": "^1.60.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.19.43",
+    "@types/node-cron": "^3.0.11",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@vitest/runner": "^1.6.1",

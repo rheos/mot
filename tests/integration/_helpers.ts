@@ -38,6 +38,66 @@ export function cleanupTempDb(dbPath: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// ── Route-handler test rig (Prompt 8) ─────────────────────────────────────────
+// The route tests exercise the HTTP handlers end-to-end against a temp DB. Two things the
+// data-layer tests don't need: a seeded API key (so apiKeyGuard accepts a Bearer token) and a
+// sealed session cookie (so isSessionRequest sees a session → includePrivate). setupRouteDb()
+// builds the temp DB, seeds app_secret with a known key, and returns the headers for both.
+
+const ROUTE_API_KEY = 'route-test-key-0123456789';
+
+export interface RouteAuth {
+  dbPath: string;
+  apiKey: string;
+  // Authorization header that apiKeyGuard accepts (API-key-only ⇒ includePrivate=false).
+  authHeader: { Authorization: string };
+  // A sealed mot_session cookie for user 'robin' ⇒ isSessionRequest true ⇒ includePrivate.
+  sessionCookie: string;
+}
+
+// Set up the temp DB, seed the API key, and seal a session cookie. Call at module top level,
+// before importing the route handlers (same ordering constraint as setupTempDb).
+export async function setupRouteDb(label: string): Promise<RouteAuth> {
+  const dbPath = setupTempDb(label);
+
+  // Seed app_secret with a known key via the real bootstrap path (hashes ROUTE_API_KEY).
+  process.env.MOT_API_KEY = ROUTE_API_KEY;
+  const { bootstrapApiKey } = await import('../../lib/auth');
+  await bootstrapApiKey();
+
+  // Seal a session cookie the same way the login route does (sessionOptions password + ttl).
+  const { sealData } = await import('iron-session');
+  const { sessionOptions } = await import('../../lib/auth');
+  const sealed = await sealData(
+    { user: 'robin' },
+    { password: sessionOptions.password as string, ttl: sessionOptions.ttl },
+  );
+
+  return {
+    dbPath,
+    apiKey: ROUTE_API_KEY,
+    authHeader: { Authorization: `Bearer ${ROUTE_API_KEY}` },
+    sessionCookie: `${sessionOptions.cookieName}=${sealed}`,
+  };
+}
+
+// A minimal valid POST /tickets JSON body (provenance/source carry through the dedup path).
+// Overridable per test. Distinct from createInput(): this is the pre-Zod HTTP body, so it omits
+// the defaulted fields Zod fills in (private/needs_review/event_count).
+export function postBody(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    title: 'Route test ticket',
+    ministry: 'works',
+    severity: 'normal',
+    ticket_type: 'infra-alert',
+    provenance: 'manual',
+    body: 'A route test ticket body.',
+    ...overrides,
+  };
+}
+
 // A minimal valid POST payload, overridable per test. Mirrors createTicketSchema's shape
 // AFTER Zod defaulting (private/needs_review/event_count present). The data layer is the unit
 // under test here, not Zod — callers pass already-validated input.
