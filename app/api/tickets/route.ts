@@ -83,7 +83,9 @@ function parseListOpts(
 ): ListOpts {
   const opts: ListOpts = { includePrivate };
 
-  const status = filterEnum(params.getAll('status'), Status);
+  // `archived` is a cron-only terminal status (retention sweep), not a triage filter — drop it
+  // from the queryable set so a `?status=archived` can't surface retired tickets through the API.
+  const status = filterEnum(params.getAll('status'), Status).filter((s) => s !== Status.archived);
   if (status.length > 0) opts.status = status;
 
   const ministry = filterEnum(params.getAll('ministry'), Ministry);
