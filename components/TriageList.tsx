@@ -6,6 +6,7 @@ import { TriageRow, type TriageTicketView } from './TriageRow';
 import { WakePending } from './WakePending';
 import { FilterChips } from './FilterChips';
 import { EmptyState, ErrorState } from './ui-states';
+import { apiPath } from '../lib/client/base-path';
 
 // The interactive shell of the triage view (FR-UI-1). The Server page does the initial in-process
 // read and hands the result in as initialData (react-nextjs §2: prefer initialData from the
@@ -50,8 +51,8 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
     try {
       const base = initial.query ? `?${initial.query}` : '';
       const [listRes, wakeRes] = await Promise.all([
-        fetch(`/api/tickets${base}`, { cache: 'no-store' }),
-        fetch('/api/tickets?wake_pending=true', { cache: 'no-store' }),
+        fetch(apiPath(`/api/tickets${base}`), { cache: 'no-store' }),
+        fetch(apiPath('/api/tickets?wake_pending=true'), { cache: 'no-store' }),
       ]);
       if (!listRes.ok || !wakeRes.ok) throw new Error('Could not load tickets');
       const list = (await listRes.json()) as { tickets: TriageTicketView[] };

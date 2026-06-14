@@ -4,6 +4,7 @@ import './globals.css';
 import { TopNav } from '../components/TopNav';
 import { ErrorBoundary } from '../components/error-boundary';
 import type { StatusPayload } from '../lib/status';
+import { apiPath } from '../lib/client/base-path';
 
 export const metadata: Metadata = {
   title: 'M.O.T. — Ministry of Tickets',
@@ -21,7 +22,9 @@ async function getStatus(): Promise<StatusPayload | null> {
     const host = h.get('host');
     if (!host) return null;
     const proto = h.get('x-forwarded-proto') ?? 'http';
-    const res = await fetch(`${proto}://${host}/api/status`, {
+    // apiPath adds the sub-path prefix (e.g. /mot) under the reverse proxy; no-op at root. The
+    // status route handler is served under basePath, so the bare /api/status would 404 there.
+    const res = await fetch(`${proto}://${host}${apiPath('/api/status')}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;

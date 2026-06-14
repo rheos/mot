@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { apiPath } from '../lib/client/base-path';
 
 // Inline comment entry on the ticket detail view (FR-UI-4). Author is always `robin` (the sole
 // human operator; `tuttle` is the system author for dedup/cascade comments). A non-empty body is
@@ -24,7 +25,7 @@ export function CommentBox({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tickets/${ticketId}`, {
+      const res = await fetch(apiPath(`/api/tickets/${ticketId}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ add_comment: { author: 'robin', body: trimmed } }),

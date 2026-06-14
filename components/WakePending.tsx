@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { TriageRow, type TriageTicketView } from './TriageRow';
+import { apiPath } from '../lib/client/base-path';
 
 // Wake-pending section (FR-UI-5, AC-EC8): snoozed tickets whose snoozed_until is now in the
 // past. Collapsible, amber-tinted warning header. "Wake all" fans out one PATCH /tickets/:id
@@ -28,7 +29,7 @@ export function WakePending({
       // No batch endpoint exists — fan out individual PATCHes, one per ticket.
       const results = await Promise.all(
         tickets.map((t) =>
-          fetch(`/api/tickets/${t.id}`, {
+          fetch(apiPath(`/api/tickets/${t.id}`), {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: 'open' }),

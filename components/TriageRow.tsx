@@ -6,6 +6,7 @@ import { MinistryTokens, SeverityTokens } from '../lib/tokens';
 import { relativeTime } from '../lib/time';
 import { SnoozePopover } from './SnoozePopover';
 import type { Ministry, Severity } from '../lib/enums';
+import { apiPath } from '../lib/client/base-path';
 
 // The data a single triage row needs. A narrow, fully serializable slice of the stored Ticket
 // (house rule: minimize what crosses the server→client boundary) — the Server page maps full
@@ -47,7 +48,7 @@ export function TriageRow({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tickets/${ticket.id}`, {
+      const res = await fetch(apiPath(`/api/tickets/${ticket.id}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

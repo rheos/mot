@@ -6,6 +6,8 @@
 // render one "Invalid credentials" line regardless of which field was wrong (no account
 // enumeration). Next 14 passes searchParams as a plain prop on the page component.
 
+import { apiPath } from '../../lib/client/base-path';
+
 export default function LoginPage({
   searchParams,
 }: {
@@ -19,7 +21,7 @@ export default function LoginPage({
         <h1 className="text-lg font-semibold mb-1 tracking-tight">M.O.T.</h1>
         <p className="text-xs text-gray-500 mb-6">Ministry of Tickets</p>
         <form
-          action="/api/auth/login"
+          action={apiPath('/api/auth/login')}
           method="POST"
           className="flex flex-col gap-4"
         >

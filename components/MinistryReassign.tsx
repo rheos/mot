@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { Ministry } from '../lib/enums';
 import { MinistryTokens } from '../lib/tokens';
+import { apiPath } from '../lib/client/base-path';
 
 // One-click ministry re-assignment on the detail view (FR-UI-3). A plain dropdown of all eight
 // ministries; selecting a new one PATCHes { ministry } and refreshes the Server Component so the
@@ -27,7 +28,7 @@ export function MinistryReassign({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tickets/${ticketId}`, {
+      const res = await fetch(apiPath(`/api/tickets/${ticketId}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ministry }),

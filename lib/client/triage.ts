@@ -8,12 +8,14 @@
 //
 // Returns true on a 2xx response, false otherwise — the caller owns the busy/error UI and the
 // router.refresh() that re-runs the Server Component query.
+import { apiPath } from './base-path';
+
 export async function patchTicketClient(
   ticketId: string,
   payload: Record<string, unknown>,
 ): Promise<boolean> {
   try {
-    const res = await fetch(`/api/tickets/${ticketId}`, {
+    const res = await fetch(apiPath(`/api/tickets/${ticketId}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

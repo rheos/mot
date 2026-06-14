@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Ministry, Severity } from '../lib/enums';
 import { MinistryTokens, SeverityTokens } from '../lib/tokens';
+import { apiPath } from '../lib/client/base-path';
 
 // Manual ticket creation form (FR-UI-10, AC-CREATE). Posts to POST /api/tickets with
 // provenance='manual', source_ref=null, and NO classification_audit block — so the data layer
@@ -58,7 +59,7 @@ export function NewTicketForm(): React.JSX.Element {
     setSubmitting(true);
     setServerError(null);
     try {
-      const res = await fetch('/api/tickets', {
+      const res = await fetch(apiPath('/api/tickets'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,6 +1,7 @@
 import { headers } from 'next/headers';
 import { relativeTime } from '../../lib/time';
 import type { StatusPayload } from '../../lib/status';
+import { apiPath } from '../../lib/client/base-path';
 
 // System Health (FR-UI-8). Server Component. Three honest sections — pipeline status,
 // classification accuracy, source-feed health — each an explicit "no data yet" stub in Phase 1.
@@ -18,7 +19,9 @@ async function getStatus(): Promise<StatusPayload | null> {
     const host = h.get('host');
     if (!host) return null;
     const proto = h.get('x-forwarded-proto') ?? 'http';
-    const res = await fetch(`${proto}://${host}/api/status`, { cache: 'no-store' });
+    // apiPath adds the sub-path prefix (e.g. /mot) under the reverse proxy; no-op at root. The
+    // status route handler is served under basePath, so the bare /api/status would 404 there.
+    const res = await fetch(`${proto}://${host}${apiPath('/api/status')}`, { cache: 'no-store' });
     if (!res.ok) return null;
     return (await res.json()) as StatusPayload;
   } catch {

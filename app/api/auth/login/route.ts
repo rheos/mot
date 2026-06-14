@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import { getIronSession } from 'iron-session';
 import { sessionOptions, verifyCredentials, type SessionData } from '../../../../lib/auth';
+import { withBasePath } from '../../../../lib/client/base-path';
 
 // POST /api/auth/login — verify env-var credentials, set the iron-session cookie, redirect.
 //
@@ -11,16 +12,19 @@ import { sessionOptions, verifyCredentials, type SessionData } from '../../../..
 export async function POST(req: Request): Promise<Response> {
   const { username, password } = await readCredentials(req);
 
+  // withBasePath keeps the 303 inside the sub-path (e.g. /mot) behind the reverse proxy; no-op at
+  // root. req.url is origin-relative here (Next does not carry basePath into a route handler's
+  // req.url), so a bare '/login' / '/' would redirect the browser out of the mounted app.
   const ok = await verifyCredentials(username, password);
   if (!ok) {
-    return Response.redirect(new URL('/login?error=1', req.url), 303);
+    return Response.redirect(new URL(withBasePath('/login?error=1'), req.url), 303);
   }
 
   const session = await getIronSession<SessionData>(cookies(), sessionOptions);
   session.user = username;
   await session.save();
 
-  return Response.redirect(new URL('/', req.url), 303);
+  return Response.redirect(new URL(withBasePath('/'), req.url), 303);
 }
 
 async function readCredentials(

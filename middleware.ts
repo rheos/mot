@@ -20,7 +20,13 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
   const session = await getIronSession<SessionData>(req, res, sessionOptions);
   if (!session.user) {
-    return NextResponse.redirect(new URL('/login', req.url));
+    // Redirect via a clone of req.nextUrl (not new URL(..., req.url)): NextURL re-adds the
+    // configured basePath when it serializes, so behind the example.com/mot proxy this lands at
+    // /mot/login, while at root it stays /login. A plain URL would drop the sub-path prefix.
+    const loginUrl = req.nextUrl.clone();
+    loginUrl.pathname = '/login';
+    loginUrl.search = '';
+    return NextResponse.redirect(loginUrl);
   }
   return res;
 }
