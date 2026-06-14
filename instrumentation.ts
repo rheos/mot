@@ -6,4 +6,9 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
   const { migrate_db } = await import('./db/client');
   migrate_db();
+  // Auth bootstrap runs once here, after migrations (app_secret table must exist):
+  // seed/verify the API-key hash, and hash the UI password into module memory.
+  const { bootstrapApiKey, bootstrapUiCredentials } = await import('./lib/auth');
+  await bootstrapApiKey();
+  await bootstrapUiCredentials();
 }

@@ -1,0 +1,28 @@
+import { NextResponse, type NextRequest } from 'next/server';
+import { getIronSession } from 'iron-session';
+import { sessionOptions, type SessionData } from './lib/auth';
+
+// Gate every UI route behind a valid session (FR-AUTH-2). A request without a valid
+// session cookie is redirected to /login.
+//
+// Public (no session required): /login, the API surface (/api/* carries its own API-key
+// or session check), /health and /status (read-only health, spec: no auth), and Next.js
+// internals. The matcher below already excludes static assets; PUBLIC_PATHS covers the rest.
+const PUBLIC_PATHS = ['/login', '/api/', '/health', '/status', '/_next/', '/favicon'];
+
+export async function middleware(req: NextRequest): Promise<NextResponse> {
+  if (PUBLIC_PATHS.some((p) => req.nextUrl.pathname.startsWith(p))) {
+    return NextResponse.next();
+  }
+
+  const res = NextResponse.next();
+  const session = await getIronSession<SessionData>(req, res, sessionOptions);
+  if (!session.user) {
+    return NextResponse.redirect(new URL('/login', req.url));
+  }
+  return res;
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};
