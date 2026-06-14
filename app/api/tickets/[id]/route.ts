@@ -45,12 +45,17 @@ export async function GET(
   }
 }
 
-// PATCH /api/tickets/:id — mutate one ticket (FR-API-2). API-key only.
+// PATCH /api/tickets/:id — mutate one ticket (FR-API-2). Auth: API key (API consumers) OR
+// session cookie (the UI) — both share this endpoint per the spec. The triage actions, comment
+// box, ministry re-assign, and wake-all all PATCH from the browser with only the session cookie,
+// so a key-only guard would 401 every UI mutation.
 export async function PATCH(
   req: Request,
   { params }: RouteContext,
 ): Promise<Response> {
-  if (!(await apiKeyGuard(req))) return unauthorized();
+  const hasKey = await apiKeyGuard(req);
+  const hasSession = await isSessionRequest(req);
+  if (!hasKey && !hasSession) return unauthorized();
 
   let body: unknown;
   try {

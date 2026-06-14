@@ -19,11 +19,22 @@ interface InitialData {
   wakePending: TriageTicketView[];
   error: boolean;
   query: string; // the raw URL query string the server used, to replay on refetch
+  q?: string; // active keyword search term (drives the empty-result copy)
+  needsReview?: boolean; // needs-review preset active (drives the empty-result copy)
 }
 
 interface TriageData {
   tickets: TriageTicketView[];
   wakePending: TriageTicketView[];
+}
+
+// The empty-result copy is context-specific (frontend-design: an empty screen is direction, not a
+// dead end). A search with no hits says what was searched; the needs-review queue says the queue
+// is clear; the plain list says there's nothing open.
+function emptyMessage(initial: InitialData): string {
+  if (initial.q) return `No tickets match '${initial.q}'`;
+  if (initial.needsReview) return 'No items need review';
+  return 'No open tickets';
 }
 
 export function TriageList({ initial }: { initial: InitialData }): React.JSX.Element {
@@ -81,14 +92,14 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
       <WakePending tickets={data.wakePending} />
       <FilterChips />
       {data.tickets.length === 0 ? (
-        <EmptyState message="No open tickets" />
+        <EmptyState message={emptyMessage(initial)} />
       ) : (
         <div
           className="border border-gray-200 rounded-lg overflow-hidden bg-white"
           data-testid="open-list"
         >
           {data.tickets.map((t) => (
-            <TriageRow key={t.id} ticket={t} />
+            <TriageRow key={t.id} ticket={t} showDismiss={initial.needsReview} />
           ))}
         </div>
       )}

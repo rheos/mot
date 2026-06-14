@@ -24,6 +24,7 @@ export function FilterChips(): React.JSX.Element {
     ministry: searchParams.getAll('ministry'),
     severity: searchParams.getAll('severity'),
   };
+  const needsReview = searchParams.get('needs_review') === 'true';
 
   // Toggle one value within a param group, preserving q and resetting to page 1.
   function toggle(key: 'status' | 'ministry' | 'severity', value: string): void {
@@ -36,6 +37,21 @@ export function FilterChips(): React.JSX.Element {
     for (const v of next) params.append(key, v);
     params.delete('page');
     router.push(`/?${params.toString()}`);
+  }
+
+  // Needs-review preset (FR-UI-6): a queue spanning ALL statuses. Activating it sets
+  // needs_review=true and clears the status filters (the queue is not scoped to one status);
+  // deactivating just drops the param and returns to the default open list. q is preserved.
+  function toggleNeedsReview(): void {
+    const params = new URLSearchParams(searchParams.toString());
+    if (needsReview) {
+      params.delete('needs_review');
+    } else {
+      params.set('needs_review', 'true');
+      params.delete('status');
+    }
+    params.delete('page');
+    router.push(params.toString() ? `/?${params.toString()}` : '/');
   }
 
   function clearAll(): void {
@@ -90,7 +106,20 @@ export function FilterChips(): React.JSX.Element {
           activeValues={active.severity}
           onToggle={(v) => toggle('severity', v)}
         />
-        {hasActive && (
+        <button
+          type="button"
+          onClick={toggleNeedsReview}
+          aria-pressed={needsReview}
+          data-testid="needs-review-toggle"
+          className={`text-xs px-2 py-1 rounded border focus:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400 ${
+            needsReview
+              ? 'border-yellow-400 bg-yellow-100 text-yellow-800'
+              : 'border-gray-300 text-gray-700 hover:bg-gray-100'
+          }`}
+        >
+          Needs review
+        </button>
+        {(hasActive || needsReview) && (
           <button
             type="button"
             onClick={clearAll}

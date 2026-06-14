@@ -27,8 +27,12 @@ export interface TriageTicketView {
 // PATCHes the API with the session cookie (sent automatically) and refreshes the server data.
 export function TriageRow({
   ticket,
+  showDismiss = false,
 }: {
   ticket: TriageTicketView;
+  // In the needs-review queue (FR-UI-6) each row gets a Dismiss action that clears the
+  // needs_review flag. Off everywhere else.
+  showDismiss?: boolean;
 }): React.JSX.Element {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -115,6 +119,17 @@ export function TriageRow({
         className="flex items-center gap-1 shrink-0"
         onClick={(e) => e.stopPropagation()}
       >
+        {showDismiss && (
+          <button
+            type="button"
+            disabled={disabled}
+            aria-busy={disabled}
+            onClick={() => void triageAction({ needs_review: false })}
+            className="text-xs px-2 py-1 rounded border border-yellow-400 bg-yellow-50 text-yellow-800 hover:bg-yellow-100 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400"
+          >
+            Dismiss
+          </button>
+        )}
         <button
           type="button"
           disabled={disabled}

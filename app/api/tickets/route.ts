@@ -20,8 +20,13 @@ import { Ministry, Status, Severity } from '../../../lib/enums';
 
 // POST /api/tickets — create or dedup-absorb a ticket (FR-API-1).
 //   201 created · 200 updated|reopened|grouped · 422 validation · 401 auth · 400 malformed JSON.
+// Auth: API key (API consumers) OR session cookie (the UI) — both share this endpoint per the
+// spec ("API key for API consumers; session cookie for the UI"). The manual create form POSTs
+// from the browser with only the session cookie, so a key-only guard would 401 every UI create.
 export async function POST(req: Request): Promise<Response> {
-  if (!(await apiKeyGuard(req))) return unauthorized();
+  const hasKey = await apiKeyGuard(req);
+  const hasSession = await isSessionRequest(req);
+  if (!hasKey && !hasSession) return unauthorized();
 
   let body: unknown;
   try {

@@ -25,6 +25,8 @@ export default function TriagePage({
 }): React.JSX.Element {
   const opts = buildListOpts(searchParams);
   const query = buildQueryString(searchParams);
+  const q = single(searchParams.q)?.trim() || undefined;
+  const needsReview = single(searchParams.needs_review) === 'true';
 
   let tickets: TriageTicketView[] = [];
   let wakePending: TriageTicketView[] = [];
@@ -41,7 +43,7 @@ export default function TriagePage({
 
   return (
     <main className="max-w-5xl mx-auto px-4 py-4">
-      <TriageList initial={{ tickets, wakePending, error, query }} />
+      <TriageList initial={{ tickets, wakePending, error, query, q, needsReview }} />
     </main>
   );
 }
@@ -74,6 +76,15 @@ function buildListOpts(params: SearchParams): ListOpts {
   const severity = filterEnum(asArray(params.severity), Severity);
   if (severity.length > 0) opts.severity = severity;
 
+  // Needs-review preset (FR-UI-6): a queue across ALL lifecycle statuses, not just open. The
+  // data layer defaults to status='open' whenever no status filter is set, so we pass the full
+  // lifecycle set explicitly here — that keeps the queue spanning open/watching/snoozed/done
+  // while staying inside the built listTickets contract (no backend change).
+  if (single(params.needs_review) === 'true') {
+    opts.needs_review = true;
+    opts.status = [Status.open, Status.watching, Status.snoozed, Status.done];
+  }
+
   const q = single(params.q);
   if (q && q.trim()) opts.q = q;
 
@@ -91,9 +102,20 @@ function buildListOpts(params: SearchParams): ListOpts {
 // separately).
 function buildQueryString(params: SearchParams): string {
   const usp = new URLSearchParams();
+  const needsReview = single(params.needs_review) === 'true';
   for (const key of ['status', 'ministry', 'severity'] as const) {
+    // In needs-review mode the server spans all lifecycle statuses; replay that explicit set so
+    // the client revalidation (GET /api/tickets?…) matches — otherwise the API would default to
+    // open-only and the list would diverge from the server snapshot on mount.
+    if (key === 'status' && needsReview) {
+      for (const s of [Status.open, Status.watching, Status.snoozed, Status.done]) {
+        usp.append('status', s);
+      }
+      continue;
+    }
     for (const v of asArray(params[key])) usp.append(key, v);
   }
+  if (needsReview) usp.set('needs_review', 'true');
   const q = single(params.q);
   if (q && q.trim()) usp.set('q', q);
   const page = single(params.page);
