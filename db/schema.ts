@@ -77,6 +77,25 @@ export const classificationAudit = sqliteTable('classification_audit', {
   created_at: text('created_at').notNull(),
 });
 
+// conversation — append-only turn ledger for Rheo's Telegram chat history.
+// session_id is assigned server-side: a new session starts when the gap since the
+// last turn for that chat_id exceeds 2 hours. Never update or delete rows.
+export const conversation = sqliteTable(
+  'conversation',
+  {
+    id:         integer('id').primaryKey({ autoIncrement: true }),
+    chat_id:    text('chat_id').notNull(),
+    session_id: text('session_id').notNull(),
+    role:       text('role', { enum: ['user', 'rheo'] }).notNull(),
+    content:    text('content').notNull(),
+    ts:         text('ts').notNull(), // ISO datetime
+  },
+  (t) => ({
+    idxChatRecent: index('idx_conv_chat_recent').on(t.chat_id, t.ts),
+    idxSession:    index('idx_conv_session').on(t.session_id),
+  }),
+);
+
 // app_secret — API-key argon2 hash + the UI login credential. App-level operational state,
 // NOT part of the frozen 4-table contract. Lives in 0000_init.sql because it has no FK
 // dependency and is needed at first boot. One row only (id always 1).
