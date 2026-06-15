@@ -7,10 +7,14 @@ export async function register(): Promise<void> {
   const { migrate_db } = await import('./db/client');
   migrate_db();
   // Auth bootstrap runs once here, after migrations (app_secret table must exist):
-  // seed/verify the API-key hash, and hash the UI password into module memory.
-  const { bootstrapApiKey, bootstrapUiCredentials } = await import('./lib/auth');
+  // seed/verify the API-key hash, hash the UI password into module memory (env fallback),
+  // then seed the DB-backed UI credential once from env (after bootstrapApiKey, which seeds
+  // the app_secret row on first boot — the UI seed UPDATEs that row).
+  const { bootstrapApiKey, bootstrapUiCredentials, bootstrapUiPassword } =
+    await import('./lib/auth');
   await bootstrapApiKey();
   await bootstrapUiCredentials();
+  await bootstrapUiPassword();
   // Nightly DB backup (FR-DB-2): register the 02:00 VACUUM INTO cron once at boot.
   const { scheduleNightly } = await import('./lib/backup');
   scheduleNightly();

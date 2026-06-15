@@ -77,11 +77,19 @@ export const classificationAudit = sqliteTable('classification_audit', {
   created_at: text('created_at').notNull(),
 });
 
-// app_secret — API-key argon2 hash. App-level operational state, NOT part of the frozen
-// 4-table contract. Lives in 0000_init.sql because it has no FK dependency and is needed at
-// first boot. One row only (id always 1).
+// app_secret — API-key argon2 hash + the UI login credential. App-level operational state,
+// NOT part of the frozen 4-table contract. Lives in 0000_init.sql because it has no FK
+// dependency and is needed at first boot. One row only (id always 1).
+//
+// ui_username / ui_password_hash are nullable and added in a later additive migration
+// (0002): the live prod row already holds key_hash, so the UI login moved from env-only
+// module memory to this row WITHOUT disturbing the existing API key. Null ⇒ not yet seeded;
+// bootstrapUiPassword() seeds them once from MOT_UI_USERNAME / MOT_UI_PASSWORD, after which
+// the DB value is authoritative (env no longer overrides it — same pattern as key_hash).
 export const appSecret = sqliteTable('app_secret', {
   id: integer('id').primaryKey(),
   key_hash: text('key_hash').notNull(),
+  ui_username: text('ui_username'),
+  ui_password_hash: text('ui_password_hash'),
   created_at: text('created_at').notNull(),
 });

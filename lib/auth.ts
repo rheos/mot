@@ -90,44 +90,146 @@ export function unauthorized(): Response {
   return Response.json({ error: 'unauthorized' }, { status: 401 });
 }
 
-// ── UI password bootstrap (FR-AUTH-2) ─────────────────────────────────────────
-// The password is env-only: argon2-hashed into module memory (never the DB, never
-// compared plaintext). verifyCredentials() compares a login candidate against it.
+// ── UI password: env memory (fallback) + DB (authoritative) ───────────────────
+// The login credential used to be env-ONLY: MOT_UI_PASSWORD argon2-hashed into module
+// memory, never the DB. That can't be changed at runtime. It now lives in the app_secret
+// DB row (ui_username / ui_password_hash), mirroring the API key, so the user can change it
+// from the app (POST /api/account/password) with no server restart.
 //
-// boot calls bootstrapUiCredentials() once from instrumentation.ts, but in `next start`
-// Next bundles instrumentation SEPARATELY from the route handlers, so the lib/auth module
-// instance the login route imports may have never run boot (_uiInitialized === false). We
-// therefore lazily self-initialize from process.env on first verify — process.env IS
-// available in route handlers at runtime — so login works in whichever bundle/module
-// instance the handler runs in. (The API key avoids this because it lives in the app_secret
-// DB row, not module memory; that asymmetry is what made login the only thing that broke.)
+// Authority model — same one-time-seed pattern as the API key:
+//   • bootstrapUiPassword() seeds the DB row from MOT_UI_USERNAME / MOT_UI_PASSWORD IF
+//     ui_password_hash is NULL (first boot of this version → the current prod creds carry
+//     over). If it's already set, boot leaves it: the DB value is authoritative and env no
+//     longer overrides it.
+//   • verifyCredentials() reads the DB. If the DB isn't seeded yet (null — e.g. the brief
+//     window before the boot step runs, or a config with no env creds) it falls back to the
+//     env-memory check so first boot still works.
+//
+// The env-memory path below is retained ONLY as that fallback. As before, boot runs once from
+// instrumentation.ts but `next start` bundles instrumentation separately from route handlers,
+// so this module lazily self-initializes the env memory from process.env on first use.
 let _uiUsername: string | null = null;
 let _uiPasswordHash: string | null = null;
 let _uiInitialized = false;
 
+// Hydrate the env-derived UI credential into module memory (the fallback path, and the source
+// bootstrapUiPassword() seeds the DB FROM). Idempotent; safe to call from boot and lazily.
 export async function bootstrapUiCredentials(): Promise<void> {
   _uiUsername = process.env.MOT_UI_USERNAME?.trim() || null;
   const pw = process.env.MOT_UI_PASSWORD;
-  // Phase 1 password policy: any non-empty value (OQ-P3). Empty/absent → login disabled.
+  // Phase 1 password policy: any non-empty value (OQ-P3). Empty/absent → no env fallback.
   _uiPasswordHash = pw ? await hash(pw) : null;
   _uiInitialized = true;
 }
 
-// Verify a login attempt. Same boolean answer regardless of which field was wrong —
-// the caller renders one "Invalid credentials" message (no account enumeration, FR-AUTH-2).
+// Seed the UI login credential into the app_secret row ONCE, from env, then the DB is
+// authoritative (the change-password endpoint is the only thing that rewrites it after).
+// Runs at boot (instrumentation.ts), after bootstrapApiKey() — the app_secret row already
+// exists by then (seeded by bootstrapApiKey on first boot). If ui_password_hash is already
+// set, this is a no-op: env never overwrites a stored credential.
+export async function bootstrapUiPassword(): Promise<void> {
+  const db = getDb();
+  const row = db
+    .prepare('SELECT ui_password_hash FROM app_secret WHERE id = 1')
+    .get() as { ui_password_hash: string | null } | undefined;
+
+  // No app_secret row at all — bootstrapApiKey() seeds it and must run first. Nothing to do
+  // here yet; a later boot (with the row present) will seed the UI credential.
+  if (!row) return;
+
+  // Already seeded — the stored hash is authoritative, env does not override it.
+  if (row.ui_password_hash) return;
+
+  const username = process.env.MOT_UI_USERNAME?.trim() || null;
+  const pw = process.env.MOT_UI_PASSWORD;
+  // No env credential to seed from → leave it null; verifyCredentials still has its env
+  // fallback (also null here → login disabled, the same Phase-1 "empty ⇒ disabled" behavior).
+  if (!username || !pw) return;
+
+  const uiHash = await hash(pw);
+  db.prepare(
+    'UPDATE app_secret SET ui_username = ?, ui_password_hash = ? WHERE id = 1',
+  ).run(username, uiHash);
+}
+
+// The stored UI credential, or null if the row/column isn't seeded yet (→ env fallback).
+function storedUiCredential(): { username: string; hash: string } | null {
+  const row = getDb()
+    .prepare('SELECT ui_username, ui_password_hash FROM app_secret WHERE id = 1')
+    .get() as
+    | { ui_username: string | null; ui_password_hash: string | null }
+    | undefined;
+  if (!row || !row.ui_username || !row.ui_password_hash) return null;
+  return { username: row.ui_username, hash: row.ui_password_hash };
+}
+
+// Verify a login attempt. Reads the DB credential (authoritative); falls back to the
+// env-memory credential only when the DB isn't seeded yet. Same boolean answer regardless of
+// which field was wrong — the caller renders one "Invalid credentials" message (no account
+// enumeration, FR-AUTH-2) — and we always run an argon2 verify so timing stays constant
+// whether the username or the password was the wrong one.
 export async function verifyCredentials(
   username: string,
   password: string,
 ): Promise<boolean> {
-  // Self-init if boot ran in a different bundle/module instance (the prod login bug).
+  const stored = storedUiCredential();
+  if (stored) return verifyAgainst(stored.username, stored.hash, username, password);
+
+  // DB not seeded yet — env fallback (first boot before bootstrapUiPassword, or no DB creds).
   if (!_uiInitialized) await bootstrapUiCredentials();
   if (!_uiUsername || !_uiPasswordHash) return false;
-  if (username !== _uiUsername) {
-    // Still run a verify against the stored hash to keep timing roughly constant, then fail.
-    await verify(_uiPasswordHash, password).catch(() => false);
-    return false;
-  }
-  return verify(_uiPasswordHash, password);
+  return verifyAgainst(_uiUsername, _uiPasswordHash, username, password);
+}
+
+// Constant-ish-timing compare: always run one argon2 verify against the stored hash, then
+// AND it with the username match, so a wrong username and a wrong password cost the same and
+// return the same boolean.
+async function verifyAgainst(
+  storedUsername: string,
+  storedHash: string,
+  username: string,
+  password: string,
+): Promise<boolean> {
+  const passwordOk = await verify(storedHash, password).catch(() => false);
+  return passwordOk && username === storedUsername;
+}
+
+// The username currently bound to the UI login — DB if seeded, else the env fallback. The
+// change-password endpoint uses it to verify current_password against the right credential
+// (the user doesn't re-type their username, just current + new password).
+export async function currentUiUsername(): Promise<string | null> {
+  const stored = storedUiCredential();
+  if (stored) return stored.username;
+  if (!_uiInitialized) await bootstrapUiCredentials();
+  return _uiUsername;
+}
+
+// ── Change the UI password (POST /api/account/password) ───────────────────────
+// Verify current_password against the live credential, then write the new argon2 hash to the
+// app_secret row. DB-authoritative: the change takes effect on the next login with no restart.
+// Returns false (without writing) when current_password is wrong — the caller maps that to a
+// 4xx. Only ui_password_hash is touched; key_hash and ui_username are left intact.
+export async function changeUiPassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<boolean> {
+  const username = await currentUiUsername();
+  // No credential to verify against (login disabled) → cannot change a password that
+  // isn't set through this path. Treat as a failed current-password check.
+  if (!username) return false;
+
+  const ok = await verifyCredentials(username, currentPassword);
+  if (!ok) return false;
+
+  const newHash = await hash(newPassword);
+  // Ensure ui_username is populated too — if we were still on the env fallback (DB unseeded),
+  // this write is what makes the DB authoritative from now on.
+  getDb()
+    .prepare(
+      'UPDATE app_secret SET ui_username = ?, ui_password_hash = ? WHERE id = 1',
+    )
+    .run(username, newHash);
+  return true;
 }
 
 // ── Session helpers (FR-AUTH-2, AC-PRIVATE) ───────────────────────────────────
