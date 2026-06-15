@@ -3,6 +3,9 @@ import { getIronSession } from 'iron-session';
 // Import session config from lib/session (no native deps) — NOT lib/auth, which pulls in
 // @node-rs/argon2 and cannot load in the Edge runtime the middleware bundles into.
 import { sessionOptions, type SessionData } from './lib/session';
+// withBasePath is Edge-safe: a pure string concat over the build-time-inlined
+// NEXT_PUBLIC_BASE_PATH, no native deps — fine to bundle into the Edge middleware.
+import { withBasePath } from './lib/client/base-path';
 
 // Gate every UI route behind a valid session (FR-AUTH-2). A request without a valid
 // session cookie is redirected to /login.
@@ -20,17 +23,23 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
   const session = await getIronSession<SessionData>(req, res, sessionOptions);
   if (!session.user) {
-    // Redirect via a clone of req.nextUrl (not new URL(..., req.url)): NextURL re-adds the
-    // configured basePath when it serializes, so behind the example.com/mot proxy this lands at
-    // /mot/login, while at root it stays /login. A plain URL would drop the sub-path prefix.
-    const loginUrl = req.nextUrl.clone();
-    loginUrl.pathname = '/login';
-    loginUrl.search = '';
-    return NextResponse.redirect(loginUrl);
+    // Relative, path-only Location (mirrors the login/logout routes): NextResponse.redirect on
+    // a cloned req.nextUrl serialized an ABSOLUTE URL built from the INTERNAL origin, so behind
+    // the example.com/mot proxy the browser was 307'd to https://localhost:3100/mot/login — a dead
+    // host. A relative Location resolves against the EXTERNAL host (example.com). withBasePath yields
+    // '/mot/login' in prod, '/login' at root.
+    return new NextResponse(null, {
+      status: 307,
+      headers: { Location: withBasePath('/login') },
+    });
   }
   return res;
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  // The index route '/' must be listed EXPLICITLY: the catch-all below does not match the bare
+  // root, so without this an unauthenticated request to '/' (the triage page) skipped the gate
+  // and rendered, then 401'd on its client fetch. The catch-all still gates every other page;
+  // PUBLIC_PATHS keeps /login, /api/, /health, /status, /_next/, /favicon open.
+  matcher: ['/', '/((?!_next/static|_next/image|favicon.ico).*)'],
 };
