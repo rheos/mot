@@ -23,15 +23,17 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
   const session = await getIronSession<SessionData>(req, res, sessionOptions);
   if (!session.user) {
-    // Relative, path-only Location (mirrors the login/logout routes): NextResponse.redirect on
-    // a cloned req.nextUrl serialized an ABSOLUTE URL built from the INTERNAL origin, so behind
-    // the example.com/mot proxy the browser was 307'd to https://localhost:3100/mot/login — a dead
-    // host. A relative Location resolves against the EXTERNAL host (example.com). withBasePath yields
-    // '/mot/login' in prod, '/login' at root.
-    return new NextResponse(null, {
-      status: 307,
-      headers: { Location: withBasePath('/login') },
-    });
+    // Middleware redirects MUST emit an ABSOLUTE URL: Next.js runs a middleware response's Location
+    // through `new URL(...)`, which THROWS on a relative path (ERR_INVALID_URL) — so a path-only
+    // Location 500s every gated page in the Edge runtime. Build the origin from the EXTERNAL host
+    // (the Host / x-forwarded-host header Apache preserves as example.com via ProxyPreserveHost), NOT
+    // from req.nextUrl — behind the proxy nextUrl carries the INTERNAL origin (localhost:3100), a
+    // dead host. withBasePath already yields '/mot/login' in prod ('/login' at root); `new URL(path,
+    // absoluteOrigin)` does NOT re-add basePath, so the result is exactly https://example.com/mot/login.
+    const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? req.nextUrl.host;
+    const proto = req.headers.get('x-forwarded-proto') ?? req.nextUrl.protocol.replace(/:$/, '') ?? 'https';
+    const loginUrl = new URL(withBasePath('/login'), `${proto}://${host}`);
+    return NextResponse.redirect(loginUrl);
   }
   return res;
 }
