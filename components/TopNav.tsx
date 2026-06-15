@@ -45,6 +45,12 @@ export function TopNav({ lastRun }: { lastRun: string | null }): React.JSX.Eleme
             {lastRun ? `Last run: ${relativeTime(lastRun)}` : 'No heartbeat yet'}
           </span>
           <Link
+            href="/account"
+            className="text-sm text-gray-600 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 rounded"
+          >
+            Account
+          </Link>
+          <Link
             href="/tickets/new"
             className="bg-gray-900 text-white rounded px-3 py-1.5 text-sm font-medium hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-500"
           >
