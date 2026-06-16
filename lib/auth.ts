@@ -74,7 +74,9 @@ function generateRandomKey(): string {
 // Pull the Bearer token, argon2-verify against the stored hash. Used by write/API routes.
 export async function apiKeyGuard(req: Request): Promise<boolean> {
   const header = req.headers.get('authorization') ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+  const fromHeader = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+  const fromQuery = new URL(req.url).searchParams.get('api_key');
+  const token = fromHeader ?? fromQuery;
   if (!token) return false;
 
   const row = getDb()

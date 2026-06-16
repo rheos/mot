@@ -19,6 +19,7 @@ import type {
   Author,
 } from './enums';
 import type { CreateTicketInput, PatchTicketInput } from './validation';
+import { ftsPhrase } from './fts';
 
 // ── Data layer (FR-API-1/2/3/4, FR-LC-1, AC-EC1/EC3/EC4) ──────────────────────
 // The contract Prompt 8's route handlers consume — handlers call NOTHING else in the data
@@ -281,15 +282,6 @@ function writeAuditRow(
 // project a rank via a CASE expression in the ORDER BY.
 const SEVERITY_ORDER_SQL = `CASE ticket.severity
   WHEN 'critical' THEN 3 WHEN 'high' THEN 2 WHEN 'normal' THEN 1 ELSE 0 END DESC`;
-
-// FTS5 phrase-quote user input. A bare hyphenated token ("root-cause") is otherwise parsed by
-// the FTS5 query grammar as a column-filter / NOT expression and errors. Wrapping the whole
-// term in double quotes (and escaping any embedded quotes) makes it a literal phrase — the
-// P3 handoff requirement. Empty/whitespace input is handled by the caller (falls back to the
-// non-FTS query).
-function ftsPhrase(q: string): string {
-  return `"${q.replace(/"/g, '""')}"`;
-}
 
 export function listTickets(opts: ListOpts): ListResult {
   const db = getDb();

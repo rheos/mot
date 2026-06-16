@@ -1,4 +1,5 @@
 import { getDb } from '../db/client';
+import { ftsPhrase } from './fts';
 
 const SESSION_GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -52,6 +53,7 @@ export function getRecentTurns(chatId: string, n = 12): Turn[] {
 
 export function searchTurns(q: string, chatId?: string, limit = 20): Turn[] {
   const db = getDb();
+  const phrase = ftsPhrase(q);
   if (chatId) {
     return db
       .prepare(
@@ -61,7 +63,7 @@ export function searchTurns(q: string, chatId?: string, limit = 20): Turn[] {
          WHERE conversation_fts MATCH ? AND c.chat_id = ?
          ORDER BY rank LIMIT ?`,
       )
-      .all(q, chatId, limit) as Turn[];
+      .all(phrase, chatId, limit) as Turn[];
   }
   return db
     .prepare(
@@ -71,5 +73,5 @@ export function searchTurns(q: string, chatId?: string, limit = 20): Turn[] {
        WHERE conversation_fts MATCH ?
        ORDER BY rank LIMIT ?`,
     )
-    .all(q, limit) as Turn[];
+    .all(phrase, limit) as Turn[];
 }

@@ -1,4 +1,5 @@
 import { apiKeyGuard, unauthorized } from '../../../lib/auth';
+import { internalError } from '../../../lib/validation';
 import { logTurn, getRecentTurns, searchTurns } from '../../../lib/conversation';
 
 // POST /api/conversation  — log a single turn
@@ -18,8 +19,14 @@ export async function POST(req: Request): Promise<Response> {
     return new Response('role must be "user" or "rheo"', { status: 422 });
   }
 
-  const turn = logTurn(chat_id, role as 'user' | 'rheo', content);
-  return Response.json(turn, { status: 201 });
+  try {
+    const turn = logTurn(chat_id, role as 'user' | 'rheo', content);
+    return Response.json(turn, { status: 201 });
+  } catch (e: unknown) {
+    // eslint-disable-next-line no-console
+    console.error('[MOT] POST /conversation error:', e);
+    return internalError();
+  }
 }
 
 // GET /api/conversation?chat_id=X&n=12   — recent turns (default 12, max 50)
@@ -31,12 +38,18 @@ export async function GET(req: Request): Promise<Response> {
   const chatId = searchParams.get('chat_id') ?? undefined;
   const q = searchParams.get('q');
 
-  if (q) {
-    const limit = Math.min(Number(searchParams.get('limit') ?? '20'), 50);
-    return Response.json(searchTurns(q, chatId, limit));
-  }
+  try {
+    if (q) {
+      const limit = Math.min(Number(searchParams.get('limit') ?? '20'), 50);
+      return Response.json(searchTurns(q, chatId, limit));
+    }
 
-  if (!chatId) return new Response('chat_id is required', { status: 422 });
-  const n = Math.min(Number(searchParams.get('n') ?? '12'), 50);
-  return Response.json(getRecentTurns(chatId, n));
+    if (!chatId) return new Response('chat_id is required', { status: 422 });
+    const n = Math.min(Number(searchParams.get('n') ?? '12'), 50);
+    return Response.json(getRecentTurns(chatId, n));
+  } catch (e: unknown) {
+    // eslint-disable-next-line no-console
+    console.error('[MOT] GET /conversation error:', e);
+    return internalError();
+  }
 }
