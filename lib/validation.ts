@@ -127,6 +127,16 @@ export function validationErrorResponse(err: ZodError): Response {
   return Response.json({ error: 'validation_failed', fields }, { status: 422 });
 }
 
+// ── Numeric query-string helpers ──────────────────────────────────────────────
+// Parse a raw query-string value as a positive integer.
+// Returns undefined for null input, non-integers, zero, and negatives — the caller
+// applies its own default and cap. Shared by any route that takes a limit/page param.
+export function parsePositiveInt(raw: string | null): number | undefined {
+  if (raw === null) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 // ── HTTP error-code policy (FR-API-1) ─────────────────────────────────────────
 // 400 malformed JSON · 401 auth (lib/auth) · 404 not found · 422 validation · 500 unexpected.
 export function badRequest(message = 'Bad request'): Response {

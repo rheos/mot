@@ -12,3 +12,10 @@ backups/
 /playwright-report/
 /tests/e2e/.auth-state.json
 /tests/e2e/.backups/
+
+# Bot runtime artifacts (live on the server, never committed)
+/bot/bot.log
+/bot/media/
+
+# Packaged skill bundles (build artifacts)
+skills/*.zip

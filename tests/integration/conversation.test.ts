@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -7,120 +7,62 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Integration tests for lib/conversation.ts (logTurn, getRecentTurns, searchTurns).
-// Setup mirrors fts.test.ts exactly: real temp DB, drizzle-managed migrations +
-// hand-written FTS migrations applied manually, full teardown after each test.
+// These tests call the REAL exported functions so that any drift in lib/conversation.ts
+// will be caught here. Setup mirrors fts.test.ts: real temp DB, drizzle migrator +
+// hand-written FTS migrations applied in lexicographic order, WAL + foreign keys.
+//
+// DATABASE_URL is set at module top level, before any dynamic import of db/client or
+// lib/conversation, so getDb() singleton opens our temp DB (not ./mot.db).
 
 const migrationsFolder = path.join(process.cwd(), 'db/migrations');
-let dbPath: string;
-let db: Database.Database;
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-conv-'));
+const dbPath = path.join(tmpDir, 'conv.db');
 
-// Mock getDb() so conversation lib uses our test database instance.
-// Better-sqlite3 is synchronous, so patching the module-level singleton via
-// vi.mock isn't necessary — we override the exported getter by pointing the
-// module to our temp DB via the same db/client path resolution.
-// Instead we import the functions directly, but we need to swap the DB.
-// The cleanest pattern for this codebase: re-implement the helpers inline
-// against our test db (matching exactly what lib/conversation.ts does),
-// which lets us test the logic (session-gap, FTS escaping) without a module mock.
-// The round-trip test uses a real DB file that db/client.ts can resolve via DATABASE_URL.
+// Set env var BEFORE any module import that calls getDb().
+process.env.DATABASE_URL = dbPath;
 
-function applyAllMigrations(d: Database.Database): void {
-  // Drizzle-managed migrations: 0000_init.sql, 0002_ui_credentials.sql, 0003_conversation.sql.
-  migrate(drizzle(d), { migrationsFolder });
-  // Hand-written FTS migrations (applied at boot by instrumentation.ts, not tracked by drizzle).
-  d.exec(fs.readFileSync(path.join(migrationsFolder, '0001_fts.sql'), 'utf8'));
-  d.exec(fs.readFileSync(path.join(migrationsFolder, '0003_conversation_fts.sql'), 'utf8'));
-}
+// Seed DB and apply all migrations (base + both hand-written FTS files).
+const seed = new Database(dbPath);
+seed.pragma('journal_mode = WAL');
+seed.pragma('foreign_keys = ON');
+migrate(drizzle(seed), { migrationsFolder });
+seed.exec(fs.readFileSync(path.join(migrationsFolder, '0001_fts.sql'), 'utf8'));
+seed.exec(fs.readFileSync(path.join(migrationsFolder, '0003_conversation_fts.sql'), 'utf8'));
+seed.close();
 
-// Inline helpers that mirror lib/conversation.ts logic against our test db.
-const SESSION_GAP_MS = 2 * 60 * 60 * 1000;
+// Dynamic imports so DATABASE_URL is set before the singleton initialises.
+const { logTurn, getRecentTurns, searchTurns } = await import('../../lib/conversation');
 
-function resolveSessionId(chatId: string, now: Date): string {
-  const last = db
-    .prepare(`SELECT ts, session_id FROM conversation WHERE chat_id = ? ORDER BY id DESC LIMIT 1`)
-    .get(chatId) as { ts: string; session_id: string } | undefined;
+// A second connection for direct DB seeding (session-gap tests need to plant a row
+// with an explicit past timestamp without going through logTurn, which always uses now).
+// This connection shares the same WAL file — writes are visible to getDb() immediately.
+const directDb = new Database(dbPath);
 
-  if (!last) return now.toISOString().slice(0, 10);
-  const gap = now.getTime() - new Date(last.ts).getTime();
-  return gap > SESSION_GAP_MS
-    ? now.toISOString().slice(0, 16).replace('T', '-')
-    : last.session_id;
-}
-
-interface Turn {
-  id: number;
-  chat_id: string;
-  session_id: string;
-  role: 'user' | 'rheo';
-  content: string;
-  ts: string;
-}
-
-function logTurn(chatId: string, role: 'user' | 'rheo', content: string, at?: Date): Turn {
-  const now = at ?? new Date();
-  const sessionId = resolveSessionId(chatId, now);
-  const ts = now.toISOString();
-  const result = db
-    .prepare(`INSERT INTO conversation (chat_id, session_id, role, content, ts) VALUES (?, ?, ?, ?, ?)`)
-    .run(chatId, sessionId, role, content, ts);
-  return { id: result.lastInsertRowid as number, chat_id: chatId, session_id: sessionId, role, content, ts };
-}
-
-function getRecentTurns(chatId: string, n = 12): Turn[] {
-  const rows = db
-    .prepare(
-      `SELECT id, chat_id, session_id, role, content, ts
-       FROM conversation WHERE chat_id = ?
-       ORDER BY id DESC LIMIT ?`,
-    )
-    .all(chatId, n) as Turn[];
-  return rows.reverse();
-}
-
-function ftsPhrase(q: string): string {
-  return `"${q.replace(/"/g, '""')}"`;
-}
-
-function searchTurns(q: string, chatId?: string, limit = 20): Turn[] {
-  const phrase = ftsPhrase(q);
-  if (chatId) {
-    return db
-      .prepare(
-        `SELECT c.id, c.chat_id, c.session_id, c.role, c.content, c.ts
-         FROM conversation_fts f
-         JOIN conversation c ON c.rowid = f.rowid
-         WHERE conversation_fts MATCH ? AND c.chat_id = ?
-         ORDER BY rank LIMIT ?`,
-      )
-      .all(phrase, chatId, limit) as Turn[];
-  }
-  return db
-    .prepare(
-      `SELECT c.id, c.chat_id, c.session_id, c.role, c.content, c.ts
-       FROM conversation_fts f
-       JOIN conversation c ON c.rowid = f.rowid
-       WHERE conversation_fts MATCH ?
-       ORDER BY rank LIMIT ?`,
-    )
-    .all(phrase, limit) as Turn[];
-}
-
-beforeEach(() => {
-  dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mot-conv-')), 'conv.db');
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  applyAllMigrations(db);
-});
-
-afterEach(() => {
-  db.close();
+afterAll(() => {
+  directDb.close();
   for (const suffix of ['', '-wal', '-shm']) {
     const f = dbPath + suffix;
     if (fs.existsSync(f)) fs.rmSync(f);
   }
 });
 
+// ── helper: plant a row with an explicit timestamp directly ───────────────────
+function seedTurn(
+  chatId: string,
+  sessionId: string,
+  role: 'user' | 'rheo',
+  content: string,
+  ts: string,
+): void {
+  directDb
+    .prepare(
+      `INSERT INTO conversation (chat_id, session_id, role, content, ts)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(chatId, sessionId, role, content, ts);
+}
+
+// ── FTS5 escaping ─────────────────────────────────────────────────────────────
 describe('searchTurns — FTS5 escaping (Fix 1 regression guard)', () => {
   it('survives a hyphenated query without throwing a SQLite syntax error', () => {
     logTurn('chat1', 'user', 'Can you follow-up on the school fees?');
@@ -128,7 +70,7 @@ describe('searchTurns — FTS5 escaping (Fix 1 regression guard)', () => {
 
     // A raw "follow-up" passed to FTS5 MATCH would be parsed as a column-filter expression
     // and throw. ftsPhrase wraps it in double-quotes so it is a literal phrase.
-    let results: Turn[] = [];
+    let results: Awaited<ReturnType<typeof getRecentTurns>> = [];
     expect(() => {
       results = searchTurns('follow-up', 'chat1');
     }).not.toThrow();
@@ -154,6 +96,7 @@ describe('searchTurns — FTS5 escaping (Fix 1 regression guard)', () => {
   });
 });
 
+// ── round-trip: logTurn → getRecentTurns ─────────────────────────────────────
 describe('round-trip: logTurn → getRecentTurns', () => {
   it('logs a turn and retrieves it in chronological order', () => {
     const t1 = logTurn('chat3', 'user', 'Hello Rheo');
@@ -175,7 +118,7 @@ describe('round-trip: logTurn → getRecentTurns', () => {
     }
     const turns = getRecentTurns('chat4', 3);
     expect(turns).toHaveLength(3);
-    // Should be the 3 most recent, in chronological order.
+    // getRecentTurns returns DESC-then-reversed, so most-recent n in chronological order.
     expect(turns[0].content).toBe('message 2');
     expect(turns[2].content).toBe('message 4');
   });
@@ -194,43 +137,59 @@ describe('round-trip: logTurn → getRecentTurns', () => {
   });
 });
 
-describe('session gap logic (resolveSessionId)', () => {
+// ── session-gap boundary ──────────────────────────────────────────────────────
+// resolveSessionId is NOT exported — we drive the session-gap behaviour through
+// logTurn by seeding a prior row with an explicit past timestamp directly into the DB
+// (bypassing logTurn, which always uses now). We then call the real logTurn and
+// read back the session_id via getRecentTurns (or a direct DB query) to assert.
+describe('session gap logic (via logTurn + direct DB seed)', () => {
   it('assigns the same session_id for turns within 2 hours', () => {
-    const base = new Date('2026-06-15T10:00:00.000Z');
-    const ninety = new Date('2026-06-15T11:30:00.000Z'); // 90 min later
+    // Seed a turn 90 minutes in the past.
+    const ninetyMinAgo = new Date(Date.now() - 90 * 60 * 1000).toISOString();
+    seedTurn('chatS', '2026-06-15', 'user', 'seeded 90 min ago', ninetyMinAgo);
 
-    const t1 = logTurn('chatS', 'user', 'first message', base);
-    const t2 = logTurn('chatS', 'rheo', 'second message', ninety);
+    // logTurn fires with now — should be within the 2h window, same session.
+    const t2 = logTurn('chatS', 'rheo', 'reply within same session');
 
-    expect(t1.session_id).toBe(t2.session_id);
+    const turns = getRecentTurns('chatS');
+    const seededTurn = turns.find((t) => t.content === 'seeded 90 min ago');
+    expect(seededTurn).toBeDefined();
+    expect(t2.session_id).toBe(seededTurn!.session_id);
   });
 
   it('creates a new session_id when turns are more than 2 hours apart', () => {
-    const base = new Date('2026-06-15T09:00:00.000Z');
-    const later = new Date('2026-06-15T11:01:00.000Z'); // 2h 1min later
+    // Seed a turn 2h 5min in the past.
+    const twoHoursFiveMinAgo = new Date(Date.now() - (2 * 60 + 5) * 60 * 1000).toISOString();
+    const oldSessionId = '2026-06-15';
+    seedTurn('chatT', oldSessionId, 'user', 'seeded 2h5m ago', twoHoursFiveMinAgo);
 
-    const t1 = logTurn('chatT', 'user', 'morning message', base);
-    const t2 = logTurn('chatT', 'user', 'afternoon message', later);
+    // logTurn fires with now — gap > 2h, should open a new session.
+    const t2 = logTurn('chatT', 'user', 'much later message');
 
-    expect(t1.session_id).not.toBe(t2.session_id);
+    expect(t2.session_id).not.toBe(oldSessionId);
   });
 
   it('first turn in a chat uses the date as session_id', () => {
-    const at = new Date('2026-06-15T14:30:00.000Z');
-    const turn = logTurn('chatU', 'user', 'first ever turn', at);
+    // No seed — chatU is fresh. logTurn should set session_id = YYYY-MM-DD.
+    const t = logTurn('chatU', 'user', 'first ever turn');
 
-    // First turn: session_id = YYYY-MM-DD (first 10 chars of ISO string)
-    expect(turn.session_id).toBe('2026-06-15');
+    // session_id for the first turn is the ISO date (first 10 chars).
+    const today = new Date().toISOString().slice(0, 10);
+    expect(t.session_id).toBe(today);
   });
 
   it('new session_id after gap uses YYYY-MM-DD-HH:MM format', () => {
-    const base = new Date('2026-06-15T08:00:00.000Z');
-    const later = new Date('2026-06-15T10:05:00.000Z'); // 2h 5min later
+    // Seed a turn 2h 5min in the past.
+    const pastTs = new Date(Date.now() - (2 * 60 + 5) * 60 * 1000).toISOString();
+    seedTurn('chatV', '2026-06-15', 'user', 'early message', pastTs);
 
-    logTurn('chatV', 'user', 'early message', base);
-    const t2 = logTurn('chatV', 'user', 'late message', later);
+    const t2 = logTurn('chatV', 'user', 'late message');
 
-    // New session: first 16 chars of ISO with T→'-'
-    expect(t2.session_id).toBe('2026-06-15-10:05');
+    // New session: "YYYY-MM-DD-HH:MM" (ISO first 16 chars with T replaced by '-').
+    expect(t2.session_id).toMatch(/^\d{4}-\d{2}-\d{2}-\d{2}:\d{2}$/);
+    // The session_id should match approximately now.
+    const expectedPrefix = new Date().toISOString().slice(0, 13); // "YYYY-MM-DDTHH"
+    const expectedFormatted = expectedPrefix.replace('T', '-');    // "YYYY-MM-DD-HH"
+    expect(t2.session_id.startsWith(expectedFormatted)).toBe(true);
   });
 });

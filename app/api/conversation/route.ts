@@ -1,5 +1,5 @@
 import { apiKeyGuard, unauthorized } from '../../../lib/auth';
-import { internalError } from '../../../lib/validation';
+import { internalError, parsePositiveInt } from '../../../lib/validation';
 import { logTurn, getRecentTurns, searchTurns } from '../../../lib/conversation';
 
 // POST /api/conversation  — log a single turn
@@ -40,12 +40,12 @@ export async function GET(req: Request): Promise<Response> {
 
   try {
     if (q) {
-      const limit = Math.min(Number(searchParams.get('limit') ?? '20'), 50);
+      const limit = Math.min(parsePositiveInt(searchParams.get('limit')) ?? 20, 50);
       return Response.json(searchTurns(q, chatId, limit));
     }
 
     if (!chatId) return new Response('chat_id is required', { status: 422 });
-    const n = Math.min(Number(searchParams.get('n') ?? '12'), 50);
+    const n = Math.min(parsePositiveInt(searchParams.get('n')) ?? 12, 50);
     return Response.json(getRecentTurns(chatId, n));
   } catch (e: unknown) {
     // eslint-disable-next-line no-console

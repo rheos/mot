@@ -8,6 +8,7 @@ import {
   validationErrorResponse,
   badRequest,
   internalError,
+  parsePositiveInt,
 } from '../../../lib/validation';
 import { createTicket, listTickets, type ListOpts } from '../../../lib/tickets';
 import { Ministry, Status, Severity } from '../../../lib/enums';
@@ -128,8 +129,3 @@ function parseBool(raw: string | null): boolean | undefined {
   return undefined;
 }
 
-function parsePositiveInt(raw: string | null): number | undefined {
-  if (raw === null) return undefined;
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : undefined;
-}
