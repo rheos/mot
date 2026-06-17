@@ -96,6 +96,54 @@ export const conversation = sqliteTable(
   }),
 );
 
+// session_digest — one row per closed session; populated by the bot's LLM digest pass (auto)
+// or by the summarize_and_archive MCP tool (structural/non-LLM, manual). Keyed on session_id.
+export const sessionDigest = sqliteTable(
+  'session_digest',
+  {
+    id:             integer('id').primaryKey({ autoIncrement: true }),
+    session_id:     text('session_id').notNull().unique(),
+    chat_id:        text('chat_id').notNull(),
+    summary:        text('summary').notNull(),
+    ts:             text('ts').notNull(),                    // ISO datetime
+    topics:         text('topics'),                         // comma-separated; reserved/unpopulated at Track 1
+    entity_draft:   text('entity_draft'),                   // JSON text; null on structural/parse-error path
+    procedural_raw: text('procedural_raw'),                 // JSON text; null on structural/parse-error path
+    parse_error:    integer('parse_error', { mode: 'boolean' }).notNull().default(false),
+    turn_count:     integer('turn_count').notNull(),
+  },
+  (t) => ({
+    idxDigestChatTs: index('idx_digest_chat_ts').on(t.chat_id, t.ts),
+  }),
+);
+
+// memory_items — strictly append-only fact store. No row is ever mutated in place.
+// Updates produce a new row; the old row's superseded_by is set to the new row's id.
+// chat_id is server-derived from source_turn_id (FK lookup); never a caller input.
+export const memoryItems = sqliteTable(
+  'memory_items',
+  {
+    id:                integer('id').primaryKey({ autoIncrement: true }),
+    type:              text('type', { enum: ['fact', 'preference', 'deadline', 'person'] }).notNull(),
+    label:             text('label').notNull(),
+    label_norm:        text('label_norm').notNull(),    // lower(trim(label)), computed on write
+    properties:        text('properties').notNull(),    // JSON text
+    chat_id:           text('chat_id').notNull(),       // server-derived from source_turn_id FK
+    source_turn_id:    integer('source_turn_id').notNull().references(() => conversation.id),
+    source_session_id: text('source_session_id').notNull(),
+    confidence:        real('confidence').notNull(),
+    reason:            text('reason').notNull(),
+    ts:                text('ts').notNull(),            // ISO datetime
+    superseded_by:     integer('superseded_by').references((): any => memoryItems.id),
+    conflict_flag:     integer('conflict_flag', { mode: 'boolean' }).notNull().default(false),
+    version:           integer('version').notNull().default(1),
+  },
+  (t) => ({
+    idxMemoryLookup:     index('idx_memory_lookup').on(t.type, t.label_norm, t.superseded_by),
+    idxMemoryChatActive: index('idx_memory_chat_active').on(t.chat_id, t.superseded_by, t.conflict_flag, t.ts),
+  }),
+);
+
 // app_secret — API-key argon2 hash + the UI login credential. App-level operational state,
 // NOT part of the frozen 4-table contract. Lives in 0000_init.sql because it has no FK
 // dependency and is needed at first boot. One row only (id always 1).

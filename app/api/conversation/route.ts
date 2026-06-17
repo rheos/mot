@@ -1,6 +1,6 @@
 import { apiKeyGuard, unauthorized } from '../../../lib/auth';
 import { internalError, parsePositiveInt } from '../../../lib/validation';
-import { logTurn, getRecentTurns, searchTurns } from '../../../lib/conversation';
+import { logTurn, getRecentTurns, searchTurns, getTurnsForSession } from '../../../lib/conversation';
 
 // POST /api/conversation  — log a single turn
 // Body: { chat_id: string, role: "user"|"rheo", content: string }
@@ -21,6 +21,7 @@ export async function POST(req: Request): Promise<Response> {
 
   try {
     const turn = logTurn(chat_id, role as 'user' | 'rheo', content);
+    // turn includes boundary_closed_session_id — the bot reads this to trigger digest (FR-3)
     return Response.json(turn, { status: 201 });
   } catch (e: unknown) {
     // eslint-disable-next-line no-console
@@ -29,16 +30,24 @@ export async function POST(req: Request): Promise<Response> {
   }
 }
 
+// GET /api/conversation?session_id=X      — all turns for one session (ASC); overrides other params
 // GET /api/conversation?chat_id=X&n=12   — recent turns (default 12, max 50)
 // GET /api/conversation?chat_id=X&q=term — FTS keyword search
 export async function GET(req: Request): Promise<Response> {
   if (!await apiKeyGuard(req)) return unauthorized();
 
   const { searchParams } = new URL(req.url);
-  const chatId = searchParams.get('chat_id') ?? undefined;
-  const q = searchParams.get('q');
+  const sessionId = searchParams.get('session_id');
 
   try {
+    // session_id branch takes precedence — used by run_digest in bot.py
+    if (sessionId) {
+      return Response.json(getTurnsForSession(sessionId));
+    }
+
+    const chatId = searchParams.get('chat_id') ?? undefined;
+    const q = searchParams.get('q');
+
     if (q) {
       const limit = Math.min(parsePositiveInt(searchParams.get('limit')) ?? 20, 50);
       return Response.json(searchTurns(q, chatId, limit));

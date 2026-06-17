@@ -12,23 +12,38 @@ export interface Turn {
   ts: string;
 }
 
-function resolveSessionId(chatId: string, now: Date): string {
+function resolveSessionId(
+  chatId: string,
+  now: Date,
+): { sessionId: string; closedSessionId: string | null } {
   const db = getDb();
   const last = db
     .prepare(`SELECT ts, session_id FROM conversation WHERE chat_id = ? ORDER BY id DESC LIMIT 1`)
     .get(chatId) as { ts: string; session_id: string } | undefined;
 
-  if (!last) return now.toISOString().slice(0, 10); // first turn: date as session id
+  if (!last) {
+    return { sessionId: now.toISOString().slice(0, 10), closedSessionId: null }; // first turn
+  }
   const gap = now.getTime() - new Date(last.ts).getTime();
-  return gap > SESSION_GAP_MS
-    ? now.toISOString().slice(0, 16).replace('T', '-') // new session: "YYYY-MM-DD-HH:MM"
-    : last.session_id;
+  if (gap > SESSION_GAP_MS) {
+    return {
+      sessionId: now.toISOString().slice(0, 16).replace('T', '-'), // new session: "YYYY-MM-DD-HH:MM"
+      closedSessionId: last.session_id, // load-bearing for bot.py auto-trigger
+    };
+  }
+  return { sessionId: last.session_id, closedSessionId: null };
 }
 
-export function logTurn(chatId: string, role: 'user' | 'rheo', content: string): Turn {
+// LogTurnResult extends Turn with the boundary signal. The bot reads
+// boundary_closed_session_id to fire the digest daemon thread (FR-3).
+export interface LogTurnResult extends Turn {
+  boundary_closed_session_id: string | null;
+}
+
+export function logTurn(chatId: string, role: 'user' | 'rheo', content: string): LogTurnResult {
   const db = getDb();
   const now = new Date();
-  const sessionId = resolveSessionId(chatId, now);
+  const { sessionId, closedSessionId } = resolveSessionId(chatId, now);
   const ts = now.toISOString();
 
   const stmt = db.prepare(
@@ -36,7 +51,15 @@ export function logTurn(chatId: string, role: 'user' | 'rheo', content: string):
   );
   const result = stmt.run(chatId, sessionId, role, content, ts);
 
-  return { id: result.lastInsertRowid as number, chat_id: chatId, session_id: sessionId, role, content, ts };
+  return {
+    id: result.lastInsertRowid as number,
+    chat_id: chatId,
+    session_id: sessionId,
+    role,
+    content,
+    ts,
+    boundary_closed_session_id: closedSessionId,
+  };
 }
 
 export function getRecentTurns(chatId: string, n = 12): Turn[] {
@@ -49,6 +72,16 @@ export function getRecentTurns(chatId: string, n = 12): Turn[] {
     )
     .all(chatId, n) as Turn[];
   return rows.reverse(); // chronological order for prompt building
+}
+
+export function getTurnsForSession(sessionId: string): Turn[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT id, chat_id, session_id, role, content, ts
+       FROM conversation WHERE session_id = ? ORDER BY id ASC`,
+    )
+    .all(sessionId) as Turn[];
 }
 
 export function searchTurns(q: string, chatId?: string, limit = 20): Turn[] {
