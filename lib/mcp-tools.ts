@@ -1,7 +1,9 @@
 import { listTickets, getTicket, createTicket, patchTicket, type ListOpts } from './tickets';
 import { buildStatus } from './status';
-import { createTicketSchema, patchTicketSchema } from './validation';
+import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './validation';
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
+import { structuralDigest } from './digest';
+import { writeMemory, getActiveMemory } from './memory';
 import type { Ministry, Status, Severity } from './enums';
 
 // ── MCP tool definitions + dispatch (Streamable HTTP transport, 2024-11-05) ───
@@ -217,6 +219,59 @@ export function listMcpTools(): ToolDef[] {
         required: ['q'],
       },
     },
+    {
+      name: 'summarize_and_archive',
+      description:
+        'Produce a structural (non-LLM) digest for a session and persist it. ' +
+        'Returns the session_digest row, or { error } on zero-turn session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string', description: 'Session ID to summarize.' },
+        },
+        required: ['session_id'],
+      },
+    },
+    {
+      name: 'write_memory',
+      description:
+        'Write a durable fact, preference, deadline, or person record to memory. ' +
+        'Call at the END of your reply, after answering Taylor. ' +
+        'chat_id is NOT an input — it is derived server-side from source_turn_id.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['fact', 'preference', 'deadline', 'person'] },
+          content: {
+            type: 'object',
+            properties: {
+              label:      { type: 'string', description: 'Short, specific label for this fact.' },
+              properties: { type: 'object', description: 'Key-value pairs with the fact details.' },
+            },
+            required: ['label', 'properties'],
+          },
+          source_turn_id:    { type: 'integer', description: 'ID of the conversation turn where this was stated.' },
+          source_session_id: { type: 'string',  description: 'Session ID of that turn.' },
+          confidence:        { type: 'number', minimum: 0, maximum: 1 },
+          reason:            { type: 'string', description: 'Why this is worth remembering.' },
+        },
+        required: ['type', 'content', 'source_turn_id', 'source_session_id', 'confidence', 'reason'],
+      },
+    },
+    {
+      name: 'memory_recent',
+      description:
+        'Return active (non-superseded, non-conflicted) memory items. ' +
+        'Input is LOCKED to { chat_id?, limit? } only — no filter, query, or type params. ' +
+        'Any search or filtering over memory items is Track 2 (entity_search, not available here).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Restrict to one chat. Omit to return all active items.' },
+          limit:   { type: 'integer', minimum: 1, maximum: 50, description: 'Max items to return. Default 20.' },
+        },
+      },
+    },
   ];
 }
 
@@ -276,6 +331,24 @@ export async function callMcpTool(
         args.chat_id as string | undefined,
         (args.limit as number) ?? 20,
       ));
+
+    case 'summarize_and_archive': {
+      const result = structuralDigest(args.session_id as string);
+      return text(result);
+    }
+
+    case 'write_memory': {
+      const parsed = writeMemorySchema.safeParse(args);
+      if (!parsed.success) throw new Error(JSON.stringify(parsed.error.issues));
+      const result = writeMemory(parsed.data);
+      return text(result);
+    }
+
+    case 'memory_recent': {
+      const chatId = typeof args.chat_id === 'string' ? args.chat_id : undefined;
+      const limit  = typeof args.limit === 'number' ? args.limit : 20;
+      return text(getActiveMemory(chatId, limit));
+    }
 
     default:
       throw new Error(`Unknown tool: ${name}`);

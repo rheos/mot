@@ -150,3 +150,19 @@ export function notFound(message = 'Not found'): Response {
 export function internalError(message = 'Internal server error'): Response {
   return Response.json({ error: 'internal_error', message }, { status: 500 });
 }
+
+// ── write_memory MCP tool schema (Track 1) ────────────────────────────────────
+// chat_id is deliberately absent — it is derived server-side from source_turn_id.
+export const writeMemorySchema = z.object({
+  type: z.enum(['fact', 'preference', 'deadline', 'person']),
+  content: z.object({
+    label: z.string().min(1),
+    properties: z.record(z.unknown()),
+  }),
+  source_turn_id: z.number().int().positive(),
+  source_session_id: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1),
+});
+
+export type WriteMemoryInput = z.infer<typeof writeMemorySchema>;
