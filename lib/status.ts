@@ -17,11 +17,30 @@ type CountedStatus = (typeof COUNTED_STATUSES)[number];
 type StatusCounts = Record<CountedStatus, number> & { wake_pending: number };
 type MinistryStatusCounts = Record<CountedStatus, number>;
 
+// Grouped quality signal by classifier version (model_version is notNull in schema;
+// prompt_hash is nullable — rows without one are grouped as null/'unhashed').
+export interface AuditQualityByVersion {
+  model_version: string;
+  prompt_hash: string | null; // null = rows that had no prompt_hash (pre-P2.2)
+  audited_count: number;
+  correction_signal_count: number; // rows where any corrected_* is non-null
+}
+
+// AC-11. This is an OBSERVED CORRECTION RATE, not an accuracy metric — a correction signal is
+// a row whose corrected_* was back-filled when Taylor re-assigned a ticket (FR-API-2b). A true
+// accuracy figure would need a confirmed-correct workflow that does not exist.
+export interface AuditQualityPayload {
+  total_audited: number;
+  total_correction_signals: number;
+  by_version: AuditQualityByVersion[];
+}
+
 export interface StatusPayload {
   db_ok: boolean;
   last_successful_run: string | null;
   ticket_counts: StatusCounts;
   ticket_counts_by_ministry: Record<string, MinistryStatusCounts>;
+  audit_quality?: AuditQualityPayload; // H8: optional — absent when audit table is empty
 }
 
 function zeroStatusCounts(): StatusCounts {
@@ -93,11 +112,52 @@ export function buildStatus(): StatusPayload {
       }
     }
 
+    // Audit quality signal — AC-11. Groups by model_version + prompt_hash (null = unhashed).
+    // correction_signal = row has any corrected_* set (a Taylor re-assign back-filled it).
+    const auditRows = db
+      .prepare(
+        `SELECT
+           model_version,
+           prompt_hash,
+           COUNT(*) AS cnt,
+           SUM(CASE WHEN corrected_ministry IS NOT NULL
+                       OR corrected_severity IS NOT NULL
+                       OR corrected_at IS NOT NULL
+                    THEN 1 ELSE 0 END) AS correction_cnt
+         FROM classification_audit
+         GROUP BY model_version, prompt_hash`,
+      )
+      .all() as {
+      model_version: string;
+      prompt_hash: string | null;
+      cnt: number;
+      correction_cnt: number;
+    }[];
+
+    // Empty audit table → auditQuality stays undefined → the health page shows the honest
+    // empty stub (house rule 6: the empty state is a real, honest state — no fabricated zero row).
+    let auditQuality: AuditQualityPayload | undefined;
+    if (auditRows.length > 0) {
+      const totalAudited = auditRows.reduce((s, r) => s + r.cnt, 0);
+      const totalCorrections = auditRows.reduce((s, r) => s + r.correction_cnt, 0);
+      auditQuality = {
+        total_audited: totalAudited,
+        total_correction_signals: totalCorrections,
+        by_version: auditRows.map((r) => ({
+          model_version: r.model_version,
+          prompt_hash: r.prompt_hash ?? null,
+          audited_count: r.cnt,
+          correction_signal_count: r.correction_cnt,
+        })),
+      };
+    }
+
     return {
       db_ok: dbOk,
       last_successful_run: lastRun.ts ?? null,
       ticket_counts: ticketCounts,
       ticket_counts_by_ministry: byMinistry,
+      audit_quality: auditQuality,
     };
   } catch {
     // DB unreachable / corrupt — report db_ok=false with zeroed counts. The handler → 503.
