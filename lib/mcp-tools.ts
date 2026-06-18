@@ -4,6 +4,7 @@ import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './vali
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory } from './memory';
+import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
 
 // ── MCP tool definitions + dispatch (Streamable HTTP transport, 2024-11-05) ───
@@ -121,7 +122,15 @@ export function listMcpTools(): ToolDef[] {
               signal_fingerprint: { type: 'string' },
               model_version: { type: 'string' },
               confidence: { type: 'number', minimum: 0, maximum: 1 },
-              prompt_hash: { type: 'string' },
+              prompt_hash: {
+                type: 'string',
+                description:
+                  "SHA-256 hex of the CLASSIFIER-PROMPT region in the skill file. REQUIRED when " +
+                  "provenance is 'gmail-parse' — the API will reject a gmail-parse create that " +
+                  "omits this field or passes it as null. Optional for heartbeat and manual " +
+                  "creates (the Zod schema keeps it optional at the type level, but the gmail-parse " +
+                  "refine enforces it at runtime).",
+              },
             },
             required: ['signal_fingerprint', 'model_version', 'confidence'],
           },
@@ -170,6 +179,18 @@ export function listMcpTools(): ToolDef[] {
       description:
         'Health check and queue snapshot: DB status, last classifier run timestamp, ' +
         'and ticket counts by status and ministry.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'mot_get_ministry_config',
+      description:
+        'Return the validated Ministry Source Adapter config. Each entry carries the ' +
+        'sourceId, ministry, channel, cadence, classifierInput mode, ticketTypes, and ' +
+        '(where set) expectedFrequency baseline. Use this to read per-adapter constraints ' +
+        'before classifying or filing a signal.',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -314,6 +335,9 @@ export async function callMcpTool(
 
     case 'mot_get_status':
       return text(buildStatus());
+
+    case 'mot_get_ministry_config':
+      return text(MINISTRY_ADAPTERS);
 
     case 'chat_log_turn':
       return text(logTurn(

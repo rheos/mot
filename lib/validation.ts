@@ -52,7 +52,24 @@ export const createTicketSchema = z
   .refine((data) => data.status !== 'archived', {
     message: ARCHIVED_MESSAGE,
     path: ['status'],
-  });
+  })
+  // gmail-parse audit guard (AC-1 + W3, R-P2-1/R-P2-6 — stricter path). Every gmail-parse
+  // create must carry a classification_audit block AND a non-empty prompt_hash. Manual and
+  // heartbeat creates are unaffected: they may omit the audit block, and an audit block with
+  // no prompt_hash stays valid for them (classificationAuditSchema keeps prompt_hash optional).
+  .refine(
+    (data) => {
+      if (data.provenance !== 'gmail-parse') return true;
+      if (!data.classification_audit) return false;
+      const ph = data.classification_audit.prompt_hash;
+      return typeof ph === 'string' && ph.length > 0;
+    },
+    {
+      message:
+        'gmail-parse creates must include a classification_audit block with a non-empty prompt_hash',
+      path: ['classification_audit'],
+    },
+  );
 
 // ── PATCH /tickets/:id ────────────────────────────────────────────────────────
 // status is validated as a RAW STRING, then sequential refines gate it. We deliberately do

@@ -6,6 +6,11 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
   const { migrate_db } = await import('./db/client');
   migrate_db();
+  // Validate adapter config at boot: a misconfigured adapter must fail the app here,
+  // not silently misroute at runtime (AC-7).
+  const { validateMinistryConfig } = await import('./lib/ministry-config');
+  const { MINISTRY_ADAPTERS } = await import('./config/ministry-adapters');
+  validateMinistryConfig(MINISTRY_ADAPTERS);
   // Auth bootstrap runs once here, after migrations (app_secret table must exist):
   // seed/verify the API-key hash, hash the UI password into module memory (env fallback),
   // then seed the DB-backed UI credential once from env (after bootstrapApiKey, which seeds
