@@ -57,7 +57,11 @@ export async function POST(req: Request): Promise<Response> {
       case 'tools/call': {
         const p = params as { name?: string; arguments?: Record<string, unknown> };
         if (!p?.name) return rpcError(id ?? null, -32602, 'Missing tool name');
-        const content = await callMcpTool(p.name, p.arguments ?? {});
+        const toolName = p.name;
+        const argKeys = Object.keys(p.arguments ?? {}).join(',');
+        // eslint-disable-next-line no-console
+        console.log(`[MOT/MCP] call: ${toolName}(${argKeys})`);
+        const content = await callMcpTool(toolName, p.arguments ?? {});
         return rpcResult(id ?? null, { content, isError: false });
       }
 
@@ -69,6 +73,9 @@ export async function POST(req: Request): Promise<Response> {
     // Tool errors surface as successful JSON-RPC responses with isError=true,
     // per the MCP spec (the tool call itself succeeded; the tool reported failure).
     if (method === 'tools/call') {
+      const toolName = (params as { name?: string })?.name ?? 'unknown';
+      // eslint-disable-next-line no-console
+      console.error(`[MOT/MCP] error: ${toolName}: ${message}`);
       return rpcResult(id ?? null, {
         content: [{ type: 'text', text: message }],
         isError: true,

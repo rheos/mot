@@ -365,6 +365,10 @@ export async function callMcpTool(
       const parsed = writeMemorySchema.safeParse(args);
       if (!parsed.success) throw new Error(JSON.stringify(parsed.error.issues));
       const result = writeMemory(parsed.data);
+      const label = parsed.data.content.label;
+      const status = 'conflict' in result ? 'conflict' : 'ok';
+      // eslint-disable-next-line no-console
+      console.log(`[MOT/memory] write: ${parsed.data.type} "${label}" conf=${parsed.data.confidence} status=${status}`);
       return text(result);
     }
 
