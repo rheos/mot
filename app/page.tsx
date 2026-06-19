@@ -57,6 +57,7 @@ function toView(t: Ticket): TriageTicketView {
     severity: t.severity,
     ticket_type: t.ticket_type,
     needs_review: t.needs_review,
+    private: t.private,
     event_count: t.event_count,
     updated_at: t.updated_at,
   };
