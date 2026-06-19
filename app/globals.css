@@ -75,7 +75,9 @@
   color: var(--on-gold);
 }
 
-html[data-anim='off'] * {
+html[data-anim='off'] *,
+html[data-anim='off'] *::before,
+html[data-anim='off'] *::after {
   transition: none !important;
 }
 

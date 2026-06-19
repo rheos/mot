@@ -3,6 +3,7 @@ import { Suspense } from 'react';
 import { Plus, Scale, Search, User } from 'lucide-react';
 import { relativeTime } from '../lib/time';
 import { SearchBox } from './SearchBox';
+import { ThemeToggle } from './ThemeToggle';
 
 // The persistent top bar (FR-UI-1, FR-UI-9). Server Component — it receives the already-fetched
 // last-run timestamp as a serializable string prop from the layout, so it does no I/O itself.
@@ -10,7 +11,7 @@ import { SearchBox } from './SearchBox';
 //   • Left:   seal + wordmark.
 //   • Middle: the debounced keyword search (SearchBox, a client component, FR-UI-7) — drives the
 //             ?q= URL param and composes with the active filters.
-//   • Right:  last-heartbeat indicator + account action + New-ticket link.
+//   • Right:  last-heartbeat indicator + theme toggle + account action + New-ticket link.
 export function TopNav({ lastRun }: { lastRun: string | null }): React.JSX.Element {
   return (
     <header className="sticky top-0 z-40 border-b border-gold-line bg-[color-mix(in_srgb,var(--bg-deep)_88%,transparent)] shadow-[0_1px_0_var(--hair)] backdrop-blur-xl">
@@ -72,6 +73,7 @@ export function TopNav({ lastRun }: { lastRun: string | null }): React.JSX.Eleme
               {lastRun ? `Last run: ${relativeTime(lastRun)}` : 'No heartbeat yet'}
             </span>
           </span>
+          <ThemeToggle />
           <Link
             href="/account"
             aria-label="Account"

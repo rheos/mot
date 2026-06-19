@@ -60,6 +60,8 @@ export default async function RootLayout({
   return (
     <html
       lang="en"
+      data-theme="dark"
+      suppressHydrationWarning
       className={`${cinzel.variable} ${hankenGrotesk.variable}`}
     >
       <body className="min-h-screen bg-bg text-ink font-sans antialiased">
