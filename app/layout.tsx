@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
+import { Cinzel, Hanken_Grotesk } from 'next/font/google';
 import './globals.css';
 import { TopNav } from '../components/TopNav';
 import { ErrorBoundary } from '../components/error-boundary';
@@ -10,6 +11,20 @@ export const metadata: Metadata = {
   title: 'M.O.T. — Ministry of Tickets',
   description: 'Single-user triage and ticketing.',
 };
+
+const cinzel = Cinzel({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-cinzel',
+  weight: ['600', '700'],
+});
+
+const hankenGrotesk = Hanken_Grotesk({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-hanken-grotesk',
+  weight: ['400', '500', '600', '700', '800'],
+});
 
 // The shell reads GET /api/status on every render to source the last-heartbeat indicator
 // (FR-UI-9). It goes over HTTP — not a direct lib/status import — so the UI layer holds no DB
@@ -43,8 +58,11 @@ export default async function RootLayout({
   const lastRun = status?.last_successful_run ?? null;
 
   return (
-    <html lang="en">
-      <body className="bg-gray-50 text-gray-900 antialiased">
+    <html
+      lang="en"
+      className={`${cinzel.variable} ${hankenGrotesk.variable}`}
+    >
+      <body className="min-h-screen bg-bg text-ink font-sans antialiased">
         <TopNav lastRun={lastRun} />
         <ErrorBoundary>{children}</ErrorBoundary>
       </body>

@@ -1,3 +1,185 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --bg: #0b1119;
+  --bg-deep: #070b11;
+  --bg-alt: #0f1722;
+  --surface: #111c28;
+  --surface-2: #16222f;
+  --surface-3: #1b2937;
+  --border: #25323f;
+  --hair: #1e2a36;
+  --ink: #ece3cf;
+  --ink-2: #b3ab98;
+  --ink-3: #7e8694;
+  --ink-faint: #566170;
+  --gold: #c8a24c;
+  --gold-bright: #e6cd88;
+  --gold-soft: #9a8a5f;
+  --gold-line: rgba(200, 162, 76, 0.3);
+  --gold-glow: rgba(200, 162, 76, 0.16);
+  --on-gold: #0b1119;
+  --teal: #2c8294;
+  --teal-bright: #3aa3b8;
+  --on-teal: #f2fbfd;
+  --amber: #d9a441;
+  --amber-tint: rgba(217, 164, 65, 0.12);
+  --amber-line: rgba(217, 164, 65, 0.32);
+  --shadow: 0 30px 60px -42px rgba(0, 0, 0, 0.85);
+  --shadow-2: 0 18px 40px -30px rgba(0, 0, 0, 0.9);
+  --shadow-pop: 0 22px 50px -24px rgba(0, 0, 0, 0.7);
+  --r: 14px;
+  --r-sm: 9px;
+  --r-xs: 6px;
+  --serif: var(--font-cinzel), Georgia, serif;
+  --sans: var(--font-hanken-grotesk), system-ui, -apple-system, sans-serif;
+  --motion-ui: 0.18s ease;
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --bg: #f0e6cf;
+  --bg-deep: #e9dcbe;
+  --bg-alt: #f5ecd8;
+  --surface: #fbf4e3;
+  --surface-2: #f6edd7;
+  --surface-3: #f1e6cd;
+  --border: #d8c596;
+  --hair: #e0d0a6;
+  --ink: #322b20;
+  --ink-2: #6f6245;
+  --ink-3: #9b8c6c;
+  --ink-faint: #b3a583;
+  --gold: #9c7a2c;
+  --gold-bright: #b8923a;
+  --gold-soft: #b7a677;
+  --gold-line: rgba(156, 122, 44, 0.34);
+  --gold-glow: rgba(156, 122, 44, 0.12);
+  --on-gold: #fbf4e3;
+  --teal: #1d6f80;
+  --teal-bright: #25899c;
+  --on-teal: #fff;
+  --amber: #9a6a1f;
+  --amber-tint: rgba(154, 106, 31, 0.12);
+  --amber-line: rgba(154, 106, 31, 0.34);
+  --shadow: 0 30px 60px -44px rgba(60, 44, 20, 0.55);
+  --shadow-2: 0 18px 40px -32px rgba(60, 44, 20, 0.5);
+  --shadow-pop: 0 22px 50px -26px rgba(60, 44, 20, 0.4);
+  color-scheme: light;
+}
+
+::selection {
+  background: var(--gold);
+  color: var(--on-gold);
+}
+
+html[data-anim='off'] * {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-ui: 0s linear;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0s !important;
+  }
+}
+
+@layer base {
+  html {
+    min-height: 100%;
+    background-color: var(--bg-deep);
+    color: var(--ink);
+    font-family: var(--sans);
+  }
+
+  body {
+    min-height: 100vh;
+    background-color: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+  }
+
+  body,
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  summary {
+    transition:
+      background-color var(--motion-ui),
+      border-color var(--motion-ui),
+      color var(--motion-ui),
+      box-shadow var(--motion-ui),
+      opacity var(--motion-ui),
+      transform var(--motion-ui);
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .surface-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    box-shadow: var(--shadow);
+  }
+
+  .surface-card-muted {
+    background: var(--surface-2);
+    border: 1px solid var(--hair);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-2);
+  }
+
+  .surface-inset {
+    background: var(--surface-3);
+    border: 1px solid var(--hair);
+    border-radius: var(--r-sm);
+  }
+
+  .surface-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid var(--gold-line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--gold) 10%, var(--surface));
+    color: var(--ink);
+  }
+
+  .surface-input {
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    color: var(--ink);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  }
+
+  .surface-kicker {
+    font-family: var(--serif);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--gold-bright);
+  }
+}
