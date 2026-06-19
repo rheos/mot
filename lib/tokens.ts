@@ -92,7 +92,7 @@ export const MinistryTokens: Record<Ministry, MinistryToken> = {
   foreign_affairs: {
     bg: 'bg-teal-100',
     text: 'text-teal-700',
-    label: 'F.Affairs',
+    label: 'Foreign Affairs',
     short: 'F. Affairs',
     icon: 'Globe',
     hue: '#4fc3c9',
