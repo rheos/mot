@@ -38,6 +38,12 @@ function emptyMessage(initial: InitialData): string {
   return 'No open tickets';
 }
 
+function listTitle(initial: InitialData): string {
+  if (initial.needsReview) return 'Needs review';
+  if (initial.query) return 'Filtered tickets';
+  return 'Open tickets';
+}
+
 export function TriageList({ initial }: { initial: InitialData }): React.JSX.Element {
   const router = useRouter();
   const [data, setData] = useState<TriageData>({
@@ -89,21 +95,33 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
   }
 
   return (
-    <div>
-      <WakePending tickets={data.wakePending} />
+    <div className="flex flex-col gap-4">
       <FilterChips />
-      {data.tickets.length === 0 ? (
-        <EmptyState message={emptyMessage(initial)} />
-      ) : (
-        <div
-          className="border border-gray-200 rounded-lg overflow-hidden bg-white"
-          data-testid="open-list"
-        >
-          {data.tickets.map((t) => (
-            <TriageRow key={t.id} ticket={t} showDismiss={initial.needsReview} />
-          ))}
+      <WakePending tickets={data.wakePending} />
+      <section
+        className="overflow-hidden rounded-[15px] border border-border bg-surface shadow-ministry-2"
+        data-testid="open-list"
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-hair px-4 py-[11px]">
+          <h2 className="font-serif text-xs font-semibold uppercase tracking-[0.18em] text-gold-soft">
+            {listTitle(initial)}
+          </h2>
+          <span className="text-[12.5px] text-ink-3">
+            {data.tickets.length} {data.tickets.length === 1 ? 'ticket' : 'tickets'}
+          </span>
         </div>
-      )}
+        {data.tickets.length === 0 ? (
+          <div className="px-4 py-5">
+            <EmptyState message={emptyMessage(initial)} />
+          </div>
+        ) : (
+          <div>
+            {data.tickets.map((t) => (
+              <TriageRow key={t.id} ticket={t} showDismiss={initial.needsReview} />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
