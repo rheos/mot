@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
+import { AlarmClock, ChevronDown, RefreshCw } from 'lucide-react';
 import { TriageRow, type TriageTicketView } from './TriageRow';
 import { apiPath } from '../lib/client/base-path';
 
@@ -51,17 +52,23 @@ export function WakePending({
 
   return (
     <section
-      className="border border-amber-200 bg-amber-50 rounded-lg mb-4 overflow-hidden"
+      className="overflow-hidden rounded-[13px] border border-amber-line bg-amber-tint"
+      data-collapsed={collapsed}
       data-testid="wake-pending"
     >
-      <div className="flex items-center justify-between px-4 py-2 bg-amber-50">
+      <div className="flex items-center justify-between gap-3 px-[14px] py-[11px]">
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
           aria-expanded={!collapsed}
-          className="flex items-center gap-2 text-sm font-medium text-amber-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 rounded"
+          className="flex items-center gap-[9px] rounded text-[13.5px] font-bold tracking-[0.02em] text-amber focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
         >
-          <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+          <ChevronDown
+            aria-hidden="true"
+            className={`h-4 w-4 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+            strokeWidth={1.9}
+          />
+          <AlarmClock aria-hidden="true" className="h-4 w-4" strokeWidth={1.9} />
           Wake pending ({tickets.length})
         </button>
         <button
@@ -69,14 +76,19 @@ export function WakePending({
           onClick={() => void wakeAll()}
           disabled={disabled}
           aria-busy={disabled}
-          className="text-xs px-3 py-1 rounded border border-amber-400 text-amber-800 hover:bg-amber-100 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+          className="inline-flex items-center gap-1.5 rounded-[8px] border border-amber-line px-3 py-1.5 text-[12.5px] font-semibold text-amber transition hover:bg-[color-mix(in_srgb,var(--amber)_14%,transparent)] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
         >
+          <RefreshCw
+            aria-hidden="true"
+            className={`h-3.5 w-3.5 ${disabled ? 'animate-spin' : ''}`}
+            strokeWidth={1.9}
+          />
           {disabled ? 'Waking…' : 'Wake all'}
         </button>
       </div>
-      {error && <p className="px-4 pb-2 text-xs text-red-600">{error}</p>}
+      {error && <p className="px-[14px] pb-2 text-xs text-amber">{error}</p>}
       {!collapsed && (
-        <div className="bg-white border-t border-amber-200">
+        <div className="border-t border-amber-line bg-surface">
           {tickets.map((t) => (
             <TriageRow key={t.id} ticket={t} />
           ))}
