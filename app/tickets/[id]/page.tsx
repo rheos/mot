@@ -1,4 +1,16 @@
 import Link from 'next/link';
+import {
+  ArrowLeft,
+  Banknote,
+  Globe,
+  GraduationCap,
+  Hammer,
+  House,
+  PiggyBank,
+  ShieldCheck,
+  Waves,
+  type LucideIcon,
+} from 'lucide-react';
 import { getTicket, type TicketWithComments } from '../../../lib/tickets';
 import { MinistryTokens, SeverityTokens } from '../../../lib/tokens';
 import { relativeTime } from '../../../lib/time';
@@ -27,6 +39,17 @@ const STATUS_LABEL: Record<string, string> = {
   archived: 'Archived',
 };
 
+const MinistryIcons: Record<string, LucideIcon> = {
+  Hammer,
+  Banknote,
+  PiggyBank,
+  ShieldCheck,
+  GraduationCap,
+  Waves,
+  House,
+  Globe,
+};
+
 export default function TicketDetailPage({
   params,
 }: {
@@ -43,16 +66,16 @@ export default function TicketDetailPage({
 
   if (error) {
     return (
-      <main className="max-w-3xl mx-auto px-4 py-8">
+      <main className="mx-auto max-w-[760px] px-5 py-[18px] pb-10">
         <BackLink />
         <div
-          className="mt-4 flex flex-col items-center gap-3 py-12 px-4 bg-red-50 rounded-lg border border-red-200"
+          className="surface-card mt-4 flex flex-col items-center gap-3 px-4 py-12"
           role="alert"
         >
-          <p className="text-red-700 text-sm">Could not load this ticket.</p>
+          <p className="text-sm text-amber">Could not load this ticket.</p>
           <Link
             href={`/tickets/${params.id}`}
-            className="text-sm text-red-700 underline hover:no-underline"
+            className="rounded-ministry-sm border border-gold-line px-3 py-2 text-sm font-bold text-gold-bright hover:bg-gold-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
           >
             Retry
           </Link>
@@ -63,7 +86,7 @@ export default function TicketDetailPage({
 
   if (!ticket) {
     return (
-      <main className="max-w-3xl mx-auto px-4 py-8">
+      <main className="mx-auto max-w-[760px] px-5 py-[18px] pb-10">
         <BackLink />
         <EmptyState message="Ticket not found" />
       </main>
@@ -72,111 +95,115 @@ export default function TicketDetailPage({
 
   const ministry = MinistryTokens[ticket.ministry];
   const severity = SeverityTokens[ticket.severity];
+  const MinistryIcon = MinistryIcons[ministry.icon] ?? Hammer;
 
   return (
-    <main className="max-w-3xl mx-auto px-4 py-8">
+    <main className="mx-auto max-w-[760px] px-5 py-[18px] pb-10">
       <BackLink />
 
-      {/* Header: title + badges on the left, status controls on the right. */}
-      <div className="mt-3 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-gray-900 break-words">
+      <div className="mt-4 flex items-start gap-[15px]">
+        <span
+          className="grid h-[54px] w-[54px] shrink-0 place-items-center rounded-ministry border shadow-[inset_0_1px_0_rgba(255,255,255,.04)]"
+          style={{
+            color: ministry.hue,
+            background: `color-mix(in srgb, ${ministry.hue} 15%, var(--surface))`,
+            borderColor: `color-mix(in srgb, ${ministry.hue} 30%, transparent)`,
+          }}
+        >
+          <MinistryIcon aria-hidden="true" className="h-[27px] w-[27px]" strokeWidth={1.8} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h1 className="break-words text-[22px] font-bold leading-tight text-ink">
             {ticket.title}
           </h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="mt-[11px] flex flex-wrap items-center gap-2">
             <span
-              className={`${ministry.bg} ${ministry.text} text-sm px-1.5 py-0.5 rounded font-medium`}
-            >
-              {ministry.label}
-            </span>
-            <span
-              className={`${severity.bg} ${severity.text} text-sm px-1.5 py-0.5 rounded font-medium`}
+              className="rounded-ministry-xs border px-[9px] py-[3px] text-[11.5px] font-bold tracking-[0.02em]"
+              style={{
+                color: severity.color,
+                background: `color-mix(in srgb, ${severity.color} 14%, transparent)`,
+                borderColor: `color-mix(in srgb, ${severity.color} 30%, transparent)`,
+              }}
             >
               {severity.label}
             </span>
-            <span className="text-sm text-gray-600">
-              {STATUS_LABEL[ticket.status] ?? ticket.status}
+            <span
+              className="rounded-ministry-xs border px-[9px] py-[3px] text-[11.5px] font-bold tracking-[0.02em]"
+              style={{
+                color: ministry.hue,
+                background: `color-mix(in srgb, ${ministry.hue} 14%, transparent)`,
+                borderColor: `color-mix(in srgb, ${ministry.hue} 28%, transparent)`,
+              }}
+            >
+              {ministry.label}
             </span>
+            <Tag>
+              {STATUS_LABEL[ticket.status] ?? ticket.status}
+            </Tag>
             {ticket.needs_review && (
-              <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-medium">
+              <Tag className="border-amber-line bg-amber-tint text-amber">
                 Needs review
-              </span>
+              </Tag>
             )}
-            {ticket.private && (
-              <span className="text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded font-medium">
-                Private
-              </span>
-            )}
+            {ticket.private && <Tag>Private</Tag>}
           </div>
         </div>
-        <StatusControls ticketId={ticket.id} />
       </div>
 
-      {/* Body. */}
-      <section className="mt-6 bg-white border border-gray-200 rounded-lg p-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-2">
-          Details
-        </h2>
-        <p className="text-sm text-gray-800 whitespace-pre-wrap">{ticket.body}</p>
+      <div className="mt-[18px]">
+        <StatusControls ticketId={ticket.id} status={ticket.status} />
+      </div>
+
+      <DetailCard title="Details">
+        <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-2">
+          {ticket.body || '—'}
+        </p>
         {ticket.blocked_note && (
-          <div className="mt-3 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-            <span className="text-xs font-medium text-amber-800">Blocked: </span>
-            <span className="text-sm text-amber-900">{ticket.blocked_note}</span>
+          <div className="mt-3 rounded-ministry-sm border border-amber-line bg-amber-tint px-3 py-2">
+            <span className="text-xs font-bold text-amber">Blocked: </span>
+            <span className="text-sm text-ink-2">{ticket.blocked_note}</span>
           </div>
         )}
-      </section>
+      </DetailCard>
 
-      {/* Metadata + dedup observability + ministry re-assign. */}
-      <section className="mt-4 bg-white border border-gray-200 rounded-lg p-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">
-          Metadata
-        </h2>
-        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+      <DetailCard title="Metadata">
+        <dl className="grid grid-cols-1 gap-x-[22px] gap-y-4 sm:grid-cols-2">
           <Field label="Ministry">
             <MinistryReassign ticketId={ticket.id} current={ticket.ministry} />
           </Field>
           <Field label="Type">
-            <span className="text-gray-800">{ticket.ticket_type}</span>
+            {ticket.ticket_type}
           </Field>
           <Field label="Provenance">
-            <span className="text-gray-800">{ticket.provenance}</span>
+            {ticket.provenance}
+          </Field>
+          <Field label="Status">
+            {STATUS_LABEL[ticket.status] ?? ticket.status}
           </Field>
           <Field label="Source ref">
-            <span className="text-gray-800 break-all">
-              {ticket.source_ref ?? <span className="text-gray-400">—</span>}
-            </span>
+            <CodeValue value={ticket.source_ref} />
           </Field>
 
           {/* Dedup observability (FR-UI-3): dedup_key is OPAQUE — shown verbatim, never parsed. */}
           <Field label="Dedup key">
-            {ticket.dedup_key ? (
-              <code className="text-gray-800 break-all bg-gray-50 px-1 py-0.5 rounded">
-                {ticket.dedup_key}
-              </code>
-            ) : (
-              <span className="text-gray-400">—</span>
-            )}
+            <CodeValue value={ticket.dedup_key} />
           </Field>
           <Field label="Signals">
-            <span className="text-gray-800">
-              {ticket.event_count > 1
-                ? `Merged from ${ticket.event_count} signals`
-                : '1 signal'}
-            </span>
+            {ticket.event_count > 1
+              ? `Merged from ${ticket.event_count} signals`
+              : '1 signal'}
           </Field>
 
           {ticket.status === 'snoozed' && ticket.snoozed_until && (
             <Field label="Snoozed until">
-              <span className="text-gray-800">
-                {relativeTime(ticket.snoozed_until)}
-              </span>
+              {relativeTime(ticket.snoozed_until)}
             </Field>
           )}
           {ticket.linked_ticket_id && (
             <Field label="Linked ticket">
               <Link
                 href={`/tickets/${ticket.linked_ticket_id}`}
-                className="text-blue-700 underline hover:no-underline break-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+                className="break-all rounded text-gold-bright underline underline-offset-2 hover:text-gold focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
               >
                 {ticket.linked_ticket_id}
               </Link>
@@ -184,43 +211,50 @@ export default function TicketDetailPage({
           )}
 
           <Field label="Created">
-            <span className="text-gray-800">{relativeTime(ticket.created_at)}</span>
+            {relativeTime(ticket.created_at)}
           </Field>
           <Field label="Updated">
-            <span className="text-gray-800">{relativeTime(ticket.updated_at)}</span>
+            {relativeTime(ticket.updated_at)}
           </Field>
           {ticket.closed_at && (
             <Field label="Closed">
-              <span className="text-gray-800">{relativeTime(ticket.closed_at)}</span>
+              {relativeTime(ticket.closed_at)}
             </Field>
           )}
         </dl>
-      </section>
+      </DetailCard>
 
-      {/* Comments — chronological (created_at asc), author + relative time. */}
-      <section className="mt-4 bg-white border border-gray-200 rounded-lg p-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">
-          Comments ({ticket.comments.length})
-        </h2>
+      <DetailCard title={`Comments (${ticket.comments.length})`}>
         {ticket.comments.length === 0 ? (
-          <p className="text-sm text-gray-400">No comments yet</p>
+          <p className="text-sm text-ink-3">No comments yet</p>
         ) : (
-          <ul className="flex flex-col gap-3">
+          <ul>
             {ticket.comments.map((c) => (
-              <li key={c.id} className="border-b border-gray-100 last:border-0 pb-3 last:pb-0">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-sm font-medium text-gray-700">{c.author}</span>
-                  <span className="text-xs text-gray-400">
+              <li
+                key={c.id}
+                className="border-b border-hair py-[13px] first:pt-0 last:border-0 last:pb-0"
+              >
+                <div className="flex items-baseline gap-[9px]">
+                  <span
+                    className={`text-[13.5px] font-bold ${
+                      c.author === 'tuttle' ? 'text-teal-bright' : 'text-ink'
+                    }`}
+                  >
+                    {c.author === 'tuttle' ? 'Tuttle' : c.author}
+                  </span>
+                  <span className="text-[11.5px] text-ink-faint">
                     {relativeTime(c.created_at)}
                   </span>
                 </div>
-                <p className="mt-1 text-sm text-gray-800 whitespace-pre-wrap">{c.body}</p>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-ink-2">
+                  {c.body}
+                </p>
               </li>
             ))}
           </ul>
         )}
         <CommentBox ticketId={ticket.id} />
-      </section>
+      </DetailCard>
     </main>
   );
 }
@@ -229,10 +263,54 @@ function BackLink(): React.JSX.Element {
   return (
     <Link
       href="/"
-      className="text-sm text-gray-500 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 rounded"
+      className="inline-flex items-center gap-[7px] rounded text-[13px] text-ink-3 transition hover:text-gold focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
     >
-      ← Back to triage
+      <ArrowLeft aria-hidden="true" className="h-4 w-4" strokeWidth={1.9} />
+      Back to triage
     </Link>
+  );
+}
+
+function DetailCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <section className="mt-4 rounded-ministry border border-border bg-surface p-[18px] shadow-ministry-2">
+      <h2 className="mb-3 text-[11px] font-bold uppercase tracking-[0.16em] text-gold-soft">
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+function Tag({
+  children,
+  className = 'border-border bg-surface-2 text-ink-2',
+}: {
+  children: React.ReactNode;
+  className?: string;
+}): React.JSX.Element {
+  return (
+    <span
+      className={`rounded-ministry-xs border px-[9px] py-[3px] text-[11.5px] font-bold tracking-[0.02em] ${className}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+function CodeValue({ value }: { value: string | null }): React.JSX.Element {
+  if (!value) return <span className="text-ink-3">—</span>;
+
+  return (
+    <code className="break-all rounded-[5px] border border-hair bg-bg-alt px-1.5 py-0.5 font-mono text-[12.5px] text-ink-2">
+      {value}
+    </code>
   );
 }
 
@@ -247,8 +325,8 @@ function Field({
 }): React.JSX.Element {
   return (
     <div className="flex flex-col gap-1">
-      <dt className="text-xs text-gray-500">{label}</dt>
-      <dd>{children}</dd>
+      <dt className="text-[11.5px] tracking-[0.04em] text-ink-3">{label}</dt>
+      <dd className="text-sm text-ink">{children}</dd>
     </div>
   );
 }
