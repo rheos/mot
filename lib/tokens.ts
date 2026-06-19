@@ -9,9 +9,19 @@ type MinistryToken = {
   text: string;
   label: string;
   short: string;
-  icon: string;
+  icon: MinistryIconKey;
   hue: string;
 };
+
+type MinistryIconKey =
+  | 'Hammer'
+  | 'Banknote'
+  | 'PiggyBank'
+  | 'ShieldCheck'
+  | 'GraduationCap'
+  | 'Waves'
+  | 'House'
+  | 'Globe';
 
 type SeverityToken = {
   bg: string;
@@ -82,7 +92,7 @@ export const MinistryTokens: Record<Ministry, MinistryToken> = {
   foreign_affairs: {
     bg: 'bg-teal-100',
     text: 'text-teal-700',
-    label: 'Foreign Affairs',
+    label: 'F.Affairs',
     short: 'F. Affairs',
     icon: 'Globe',
     hue: '#4fc3c9',
