@@ -7,10 +7,10 @@ import { ChangePasswordForm } from '../../components/ChangePasswordForm';
 
 export default function AccountPage(): React.JSX.Element {
   return (
-    <main className="min-h-screen flex items-start justify-center bg-gray-50 px-4 py-12">
-      <div className="w-full max-w-sm bg-white border border-gray-200 rounded-lg p-8 shadow-sm">
-        <h1 className="text-lg font-semibold mb-1 tracking-tight">Change password</h1>
-        <p className="text-xs text-gray-500 mb-6">
+    <main className="flex min-h-screen items-start justify-center px-4 py-12">
+      <div className="surface-card w-full max-w-sm p-8">
+        <h1 className="mb-1 text-lg font-semibold tracking-tight text-ink">Change password</h1>
+        <p className="mb-6 text-xs text-ink-3">
           Takes effect on your next sign-in.
         </p>
         <ChangePasswordForm />

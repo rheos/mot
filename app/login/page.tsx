@@ -16,43 +16,47 @@ export default function LoginPage({
   const failed = Boolean(searchParams.error);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-sm bg-white border border-gray-200 rounded-lg p-8 shadow-sm">
-        <h1 className="text-lg font-semibold mb-1 tracking-tight">M.O.T.</h1>
-        <p className="text-xs text-gray-500 mb-6">Ministry of Tickets</p>
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="surface-card w-full max-w-sm p-8">
+        <h1 className="font-serif text-2xl font-bold uppercase tracking-wide text-gold-bright">
+          M.O.T.
+        </h1>
+        <p className="mb-6 mt-1 text-xs uppercase tracking-[0.18em] text-ink-3">
+          Ministry of Tickets
+        </p>
         <form
           action={apiPath('/api/auth/login')}
           method="POST"
           className="flex flex-col gap-4"
         >
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-600">Username</span>
+            <span className="text-xs font-medium text-ink-2">Username</span>
             <input
               name="username"
               type="text"
               autoComplete="username"
               required
-              className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+              className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-600">Password</span>
+            <span className="text-xs font-medium text-ink-2">Password</span>
             <input
               name="password"
               type="password"
               autoComplete="current-password"
               required
-              className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+              className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
             />
           </label>
           <button
             type="submit"
-            className="mt-2 bg-gray-900 text-white rounded px-3 py-2 text-sm font-medium hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-500"
+            className="mt-2 inline-flex items-center justify-center rounded-ministry-sm border border-gold-line bg-gold px-3 py-2 text-sm font-bold text-on-gold outline-none hover:bg-gold-bright focus-visible:ring-2 focus-visible:ring-gold-bright"
           >
             Sign in
           </button>
           {failed && (
-            <p className="text-red-600 text-sm text-center" role="alert">
+            <p className="text-center text-sm text-red-400" role="alert">
               Invalid credentials
             </p>
           )}

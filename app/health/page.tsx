@@ -35,8 +35,8 @@ export default async function HealthPage(): Promise<React.JSX.Element> {
 
   return (
     <main className="max-w-3xl mx-auto px-4 py-8">
-      <h1 className="text-xl font-semibold text-gray-900">System health</h1>
-      <p className="mt-1 text-sm text-gray-500">
+      <h1 className="text-xl font-semibold text-ink">System health</h1>
+      <p className="mt-1 text-sm text-ink-3">
         Phase 1 surface. The pipeline that fills these sections lands in Phase 2.
       </p>
 
@@ -63,10 +63,10 @@ function Section({
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
-    <section className="bg-white border border-gray-200 rounded-lg p-4">
-      <h2 className="font-medium text-sm text-gray-700 mb-2">{title}</h2>
+    <section className="surface-card p-4">
+      <h2 className="font-medium text-sm text-ink-2 mb-2">{title}</h2>
       {/* div, not p: AuditQualitySection nests a <ul>, which is invalid inside a <p>. */}
-      <div className="text-sm text-gray-500">{children}</div>
+      <div className="text-sm text-ink-3">{children}</div>
     </section>
   );
 }
@@ -85,7 +85,7 @@ function AuditQualitySection({
       <>
         No classification data yet
         <br />
-        <span className="text-xs text-gray-400">
+        <span className="text-xs text-ink-faint">
           Populates once the intake routine starts passing the audit block (Phase 2.2).
         </span>
       </>
@@ -107,14 +107,14 @@ function AuditQualitySection({
         correction signals: {correctionLabel}
       </span>
       <br />
-      <span className="text-xs text-gray-400">
+      <span className="text-xs text-ink-faint">
         Note: this is an observed correction rate, not an accuracy metric. A true accuracy
         figure requires a confirmed-correct workflow that does not exist yet.
       </span>
       {by_version.length > 0 && (
         <ul className="mt-2 text-xs space-y-0.5">
           {by_version.map((v, i) => (
-            <li key={i} className="text-gray-500">
+            <li key={i} className="text-ink-3">
               {v.model_version}
               {v.prompt_hash ? ` / prompt ${v.prompt_hash.slice(0, 8)}…` : ' / unhashed'}{' '}
               &mdash; {v.audited_count} audited, {v.correction_signal_count} corrected

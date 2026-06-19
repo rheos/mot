@@ -123,7 +123,7 @@ export function ChangePasswordForm(): React.JSX.Element {
       {serverError && (
         <div
           role="alert"
-          className="bg-red-50 border border-red-200 rounded px-3 py-2 text-sm text-red-700"
+          className="rounded-ministry-sm border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
         >
           {serverError}
         </div>
@@ -132,7 +132,7 @@ export function ChangePasswordForm(): React.JSX.Element {
       {success && (
         <div
           role="status"
-          className="bg-green-50 border border-green-200 rounded px-3 py-2 text-sm text-green-700"
+          className="rounded-ministry-sm border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300"
         >
           Password changed
         </div>
@@ -154,10 +154,10 @@ export function ChangePasswordForm(): React.JSX.Element {
           aria-describedby={
             errors.current_password ? 'current_password-error' : undefined
           }
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         />
         {errors.current_password && (
-          <p id="current_password-error" className="text-red-600 text-xs">
+          <p id="current_password-error" className="text-red-400 text-xs">
             {errors.current_password}
           </p>
         )}
@@ -177,10 +177,10 @@ export function ChangePasswordForm(): React.JSX.Element {
           }
           aria-invalid={Boolean(errors.new_password)}
           aria-describedby={errors.new_password ? 'new_password-error' : undefined}
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         />
         {errors.new_password && (
-          <p id="new_password-error" className="text-red-600 text-xs">
+          <p id="new_password-error" className="text-red-400 text-xs">
             {errors.new_password}
           </p>
         )}
@@ -202,10 +202,10 @@ export function ChangePasswordForm(): React.JSX.Element {
           aria-describedby={
             errors.confirm_password ? 'confirm_password-error' : undefined
           }
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         />
         {errors.confirm_password && (
-          <p id="confirm_password-error" className="text-red-600 text-xs">
+          <p id="confirm_password-error" className="text-red-400 text-xs">
             {errors.confirm_password}
           </p>
         )}
@@ -215,7 +215,7 @@ export function ChangePasswordForm(): React.JSX.Element {
         type="submit"
         disabled={submitting}
         aria-busy={submitting}
-        className="self-start mt-2 bg-gray-900 text-white rounded px-4 py-2 text-sm font-medium hover:bg-gray-800 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-500"
+        className="mt-2 inline-flex items-center justify-center self-start rounded-ministry-sm border border-gold-line bg-gold px-4 py-2 text-sm font-bold text-on-gold outline-none hover:bg-gold-bright disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-gold-bright"
       >
         {submitting ? 'Changing…' : 'Change password'}
       </button>

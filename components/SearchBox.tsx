@@ -42,7 +42,7 @@ export function SearchBox(): React.JSX.Element {
       onChange={(e) => onChange(e.target.value)}
       placeholder="Search tickets…"
       aria-label="Search tickets"
-      className="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+      className="w-full surface-input px-3 py-1.5 text-sm outline-none placeholder:text-ink-3 focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
     />
   );
 }

@@ -60,11 +60,15 @@ export interface TriageTicketView {
 export function TriageRow({
   ticket,
   showDismiss = false,
+  onResolved,
 }: {
   ticket: TriageTicketView;
   // In the needs-review queue (FR-UI-6) each row gets a Dismiss action that clears the
   // needs_review flag. Off everywhere else.
   showDismiss?: boolean;
+  // Called after a triage action commits (HTTP 200). The parent list re-queries the server so
+  // this row drops out of (or updates within) the current view. Absent → fall back to a refresh.
+  onResolved?: () => void;
 }): React.JSX.Element {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -96,8 +100,14 @@ export function TriageRow({
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error('Triage action failed');
-      // Re-run the Server Component query so the row reflects its new status.
-      startTransition(() => router.refresh());
+      // The PATCH committed (200) — the DB now holds the new status. Ask the parent list to
+      // re-query the server so this row reflects reality (a done/watch/snooze drops it from the
+      // open view). Falls back to a full refresh when rendered without a parent handler.
+      if (onResolved) {
+        onResolved();
+      } else {
+        startTransition(() => router.refresh());
+      }
     } catch {
       setError('Action failed — try again');
     } finally {

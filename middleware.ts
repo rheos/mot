@@ -11,9 +11,10 @@ import { withBasePath } from './lib/client/base-path';
 // session cookie is redirected to /login.
 //
 // Public (no session required): /login, the API surface (/api/* carries its own API-key
-// or session check), /health and /status (read-only health, spec: no auth), and Next.js
-// internals. The matcher below already excludes static assets; PUBLIC_PATHS covers the rest.
-const PUBLIC_PATHS = ['/login', '/api/', '/health', '/status', '/_next/', '/favicon'];
+// or session check), /health and /status (read-only health, spec: no auth), the app icon
+// (favicons must load on the login page too), and Next.js internals. The matcher below already
+// excludes static assets; PUBLIC_PATHS covers the rest.
+const PUBLIC_PATHS = ['/login', '/api/', '/health', '/status', '/_next/', '/favicon', '/icon.svg'];
 
 export async function middleware(req: NextRequest): Promise<NextResponse> {
   if (PUBLIC_PATHS.some((p) => req.nextUrl.pathname.startsWith(p))) {
@@ -42,6 +43,6 @@ export const config = {
   // The index route '/' must be listed EXPLICITLY: the catch-all below does not match the bare
   // root, so without this an unauthenticated request to '/' (the triage page) skipped the gate
   // and rendered, then 401'd on its client fetch. The catch-all still gates every other page;
-  // PUBLIC_PATHS keeps /login, /api/, /health, /status, /_next/, /favicon open.
-  matcher: ['/', '/((?!_next/static|_next/image|favicon.ico).*)'],
+  // PUBLIC_PATHS keeps /login, /api/, /health, /status, /_next/, /favicon, /icon.svg open.
+  matcher: ['/', '/((?!_next/static|_next/image|favicon.ico|icon.svg).*)'],
 };

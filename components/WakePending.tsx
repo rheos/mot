@@ -12,8 +12,12 @@ import { apiPath } from '../lib/client/base-path';
 // row is individually actionable with the standard triage controls (reuses TriageRow).
 export function WakePending({
   tickets,
+  onResolved,
 }: {
   tickets: TriageTicketView[];
+  // Bubbled up from the parent list: re-query the server after an action commits so woken /
+  // resolved rows leave this section (and the open list) without a full page refresh.
+  onResolved?: () => void;
 }): React.JSX.Element | null {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
@@ -40,7 +44,11 @@ export function WakePending({
       if (results.some((r) => !r.ok)) {
         throw new Error('One or more tickets failed to wake');
       }
-      startTransition(() => router.refresh());
+      if (onResolved) {
+        onResolved();
+      } else {
+        startTransition(() => router.refresh());
+      }
     } catch {
       setError('Some tickets could not be woken — try again');
     } finally {
@@ -90,7 +98,7 @@ export function WakePending({
       {!collapsed && (
         <div className="border-t border-amber-line bg-surface">
           {tickets.map((t) => (
-            <TriageRow key={t.id} ticket={t} />
+            <TriageRow key={t.id} ticket={t} onResolved={onResolved} />
           ))}
         </div>
       )}

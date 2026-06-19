@@ -103,7 +103,7 @@ export function NewTicketForm(): React.JSX.Element {
       {serverError && (
         <div
           role="alert"
-          className="bg-red-50 border border-red-200 rounded px-3 py-2 text-sm text-red-700"
+          className="rounded-ministry-sm border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
         >
           {serverError}
         </div>
@@ -118,9 +118,9 @@ export function NewTicketForm(): React.JSX.Element {
           value={fields.title}
           onChange={(e) => setFields((f) => ({ ...f, title: e.target.value }))}
           aria-invalid={Boolean(errors.title)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         />
-        {errors.title && <p className="text-red-600 text-xs">{errors.title}</p>}
+        {errors.title && <p className="text-red-400 text-xs">{errors.title}</p>}
       </div>
 
       <div className="flex flex-col gap-1">
@@ -134,7 +134,7 @@ export function NewTicketForm(): React.JSX.Element {
             setFields((f) => ({ ...f, ministry: e.target.value as Ministry | '' }))
           }
           aria-invalid={Boolean(errors.ministry)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         >
           <option value="">Select ministry…</option>
           {Object.values(Ministry).map((m) => (
@@ -143,7 +143,7 @@ export function NewTicketForm(): React.JSX.Element {
             </option>
           ))}
         </select>
-        {errors.ministry && <p className="text-red-600 text-xs">{errors.ministry}</p>}
+        {errors.ministry && <p className="text-red-400 text-xs">{errors.ministry}</p>}
       </div>
 
       <div className="flex flex-col gap-1">
@@ -157,7 +157,7 @@ export function NewTicketForm(): React.JSX.Element {
             setFields((f) => ({ ...f, severity: e.target.value as Severity | '' }))
           }
           aria-invalid={Boolean(errors.severity)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         >
           <option value="">Select severity…</option>
           {Object.values(Severity).map((s) => (
@@ -166,7 +166,7 @@ export function NewTicketForm(): React.JSX.Element {
             </option>
           ))}
         </select>
-        {errors.severity && <p className="text-red-600 text-xs">{errors.severity}</p>}
+        {errors.severity && <p className="text-red-400 text-xs">{errors.severity}</p>}
       </div>
 
       <div className="flex flex-col gap-1">
@@ -180,7 +180,7 @@ export function NewTicketForm(): React.JSX.Element {
           list="ticket-type-suggestions"
           placeholder="e.g. flow-block, ad-hoc"
           aria-invalid={Boolean(errors.ticket_type)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         />
         <datalist id="ticket-type-suggestions">
           {TICKET_TYPE_SUGGESTIONS.map((t) => (
@@ -188,7 +188,7 @@ export function NewTicketForm(): React.JSX.Element {
           ))}
         </datalist>
         {errors.ticket_type && (
-          <p className="text-red-600 text-xs">{errors.ticket_type}</p>
+          <p className="text-red-400 text-xs">{errors.ticket_type}</p>
         )}
       </div>
 
@@ -201,9 +201,9 @@ export function NewTicketForm(): React.JSX.Element {
           value={fields.body}
           onChange={(e) => setFields((f) => ({ ...f, body: e.target.value }))}
           aria-invalid={Boolean(errors.body)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm min-h-[100px] resize-y focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+          className="surface-input min-h-[100px] resize-y px-3 py-2 text-sm outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold-line"
         />
-        {errors.body && <p className="text-red-600 text-xs">{errors.body}</p>}
+        {errors.body && <p className="text-red-400 text-xs">{errors.body}</p>}
       </div>
 
       <div className="flex items-center gap-2">
@@ -212,7 +212,7 @@ export function NewTicketForm(): React.JSX.Element {
           id="private"
           checked={fields.private}
           onChange={(e) => setFields((f) => ({ ...f, private: e.target.checked }))}
-          className="accent-gray-900"
+          className="accent-gold"
         />
         <label htmlFor="private" className="text-sm">
           Private (Education / co-parent)
@@ -223,7 +223,7 @@ export function NewTicketForm(): React.JSX.Element {
         type="submit"
         disabled={submitting}
         aria-busy={submitting}
-        className="self-start bg-gray-900 text-white rounded px-4 py-2 text-sm font-medium hover:bg-gray-800 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-500"
+        className="inline-flex items-center justify-center self-start rounded-ministry-sm border border-gold-line bg-gold px-4 py-2 text-sm font-bold text-on-gold outline-none hover:bg-gold-bright disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-gold-bright"
       >
         {submitting ? 'Creating…' : 'Create ticket'}
       </button>

@@ -88,6 +88,12 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
     router.refresh();
   }
 
+  // After any row action commits, re-query the server so the list reflects the DB — a resolved
+  // ticket (done/watch/snooze) no longer matches the active filter and drops out of the view.
+  function reload(): void {
+    void load();
+  }
+
   if (error) {
     return (
       <ErrorState message="Could not load tickets — try again" onRetry={retry} />
@@ -97,7 +103,7 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
   return (
     <div className="flex flex-col gap-4">
       <FilterChips />
-      <WakePending tickets={data.wakePending} />
+      <WakePending tickets={data.wakePending} onResolved={reload} />
       <section
         className="overflow-hidden rounded-[15px] border border-border bg-surface shadow-ministry-2"
         data-testid="open-list"
@@ -117,7 +123,12 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
         ) : (
           <div>
             {data.tickets.map((t) => (
-              <TriageRow key={t.id} ticket={t} showDismiss={initial.needsReview} />
+              <TriageRow
+                key={t.id}
+                ticket={t}
+                showDismiss={initial.needsReview}
+                onResolved={reload}
+              />
             ))}
           </div>
         )}
