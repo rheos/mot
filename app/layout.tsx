@@ -26,6 +26,15 @@ const hankenGrotesk = Hanken_Grotesk({
   weight: ['400', '500', '600', '700', '800'],
 });
 
+// No-flash theme guard. <html> ships with data-theme="dark" (the design default), so a user who
+// last chose the light/parchment theme would see a dark flash on every load until ThemeToggle's
+// effect runs. This blocking script reads the stored choice and sets data-theme before first
+// paint. Keep the storage key ('mot-theme') and the dark fallback in lockstep with
+// components/ThemeToggle.tsx (STORAGE_KEY / readStoredTheme) — both must change together.
+const NO_FLASH_THEME_SCRIPT =
+  "try{var t=localStorage.getItem('mot-theme');" +
+  "document.documentElement.dataset.theme=(t==='light'||t==='dark')?t:'dark';}catch(e){}";
+
 // The shell reads GET /api/status on every render to source the last-heartbeat indicator
 // (FR-UI-9). It goes over HTTP — not a direct lib/status import — so the UI layer holds no DB
 // handle (house rule 2). The origin comes from the request Host header (works on any dev port,
@@ -64,6 +73,9 @@ export default async function RootLayout({
       suppressHydrationWarning
       className={`${cinzel.variable} ${hankenGrotesk.variable}`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: NO_FLASH_THEME_SCRIPT }} />
+      </head>
       <body className="min-h-screen bg-bg text-ink font-sans antialiased">
         <TopNav lastRun={lastRun} />
         <ErrorBoundary>{children}</ErrorBoundary>

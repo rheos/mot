@@ -5,6 +5,8 @@ import { Moon, Sun } from 'lucide-react';
 
 type ThemeMode = 'dark' | 'light';
 
+// Keep STORAGE_KEY and the dark fallback (readStoredTheme) in lockstep with the no-flash guard
+// in app/layout.tsx (NO_FLASH_THEME_SCRIPT) — both read the same key before/after hydration.
 const STORAGE_KEY = 'mot-theme';
 
 function readStoredTheme(): ThemeMode {
