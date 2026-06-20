@@ -36,6 +36,14 @@ export const createTicketSchema = z
       .regex(/^[^:]+$/, 'ticket_type must not contain a colon'),
     provenance: z.enum(Object.values(Provenance) as [string, ...string[]]),
     source_ref: z.string().nullable().optional(),
+    // One-time pre-fix compatibility bridge (FR-15/17, EC-1). The message ids seen in this
+    // Gmail thread. Each is composed into a candidate dedup_key (`msgId:ticket_type`) to find a
+    // pre-fix message-keyed ticket on a primary thread-id miss. Same colon-free guard as
+    // ticket_type — a colon would alias the candidate key, so reject (do NOT sanitize), not clean
+    // data. Gmail message ids are Base64url and carry no colons in practice.
+    bridge_source_refs: z
+      .array(z.string().min(1).regex(/^[^:]+$/, 'bridge_source_refs entries must not contain a colon'))
+      .optional(),
     body: z.string().min(1, 'body is required'),
     private: z.boolean().optional().default(false),
     needs_review: z.boolean().optional().default(false),

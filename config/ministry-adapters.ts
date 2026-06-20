@@ -14,7 +14,7 @@ export type MinistrySourceAdapter = {
   ministry: Ministry;
   channel: 'gmail-poll' | 'webhook' | 'api-poll' | 'status-poll' | 'manual';
   cadence: 'high' | 'daily';
-  sourceRefRule: 'gmail-message-id';
+  sourceRefRule: 'gmail-message-id' | 'gmail-thread-id';
   defaultSeverity: Severity;
   ticketTypes: string[];
   classifierInput: 'minimal' | 'metadata-only';
@@ -31,7 +31,7 @@ export const MINISTRY_ADAPTERS: MinistrySourceAdapter[] = [
     // neutral admin default and is non-sensitive, so classifierInput: 'minimal' is valid here.
     channel: 'gmail-poll',
     cadence: 'daily',
-    sourceRefRule: 'gmail-message-id',
+    sourceRefRule: 'gmail-thread-id',
     defaultSeverity: 'normal',
     ticketTypes: [
       'bill-due', 'statement-ready', 'renewal-notice', 'school-comm',

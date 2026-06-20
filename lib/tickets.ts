@@ -67,10 +67,15 @@ export interface TicketWithComments extends Ticket {
 }
 
 // POST result: the resolved action + the resulting (created or updated) ticket (FR-API-1).
+// `bridged` is present and true ONLY when the pre-fix compatibility bridge matched a
+// message-keyed ticket and migrated it to thread identity in this tx (FR-15/17, EC-1, AC-13).
+// The mot_create_ticket MCP handler auto-serializes this whole struct, so this field IS the
+// `bridged: true` tool-response marker — no mcp-tools.ts change is needed for it.
 export interface TicketWithAction {
   id: string;
   action: DedupAction;
   ticket: Ticket;
+  bridged?: true;
 }
 
 export interface ListOpts {
@@ -147,6 +152,9 @@ export function createTicket(input: CreateTicketInput): TicketWithAction {
         source_ref: sourceRef,
         ticket_type: input.ticket_type,
         severity: input.severity as Severity,
+        signal_fingerprint:
+          input.classification_audit?.signal_fingerprint ?? null,
+        bridge_source_refs: input.bridge_source_refs ?? [],
       },
       db,
     );
@@ -190,6 +198,28 @@ export function createTicket(input: CreateTicketInput): TicketWithAction {
 
     // Dedup hit — act on the existing row per the resolved action.
     const existingId = decision.existingId!;
+
+    // ── Pre-fix compatibility bridge migration (FR-15/17, EC-1, AC-13) ─────────
+    // The bridge matched a message-keyed ticket. Rewrite its identity to the thread BEFORE the
+    // action UPDATE so a later refire on this thread hits the primary lookup (AC-14) and never
+    // re-enters the bridge. Atomic with the action — same tx. The matched row's source_ref is a
+    // message id today; sourceRef here is the thread id (non-null: the bridge only runs when
+    // source_ref is non-null, since resolveDedup returns early on null source_ref).
+    if (decision.bridge) {
+      const oldRow = fetchTicket(db, existingId)!;
+      const oldDedupKey = oldRow.dedup_key;
+      const newDedupKey = computeDedupKey(sourceRef!, input.ticket_type);
+      db.prepare(
+        `UPDATE ticket SET source_ref = ?, dedup_key = ? WHERE id = ?`,
+      ).run(sourceRef, newDedupKey, existingId);
+      addSystemComment(
+        db,
+        existingId,
+        'tuttle',
+        `Thread identity migrated from ${oldDedupKey} to ${newDedupKey} (pre-fix message-keyed bridge).`,
+        now,
+      );
+    }
 
     if (decision.action === 'reopened') {
       // done → open: clear closed_at, bump counter, re-open system comment.
@@ -237,9 +267,12 @@ export function createTicket(input: CreateTicketInput): TicketWithAction {
       );
     }
 
+    // Ordering is contractual for the EXISTS gate in resolveDedup — do not move this before resolveDedup.
     writeAuditRow(db, input, decision.action, existingId, now);
     const ticket = fetchTicket(db, existingId)!;
-    return { id: existingId, action: decision.action, ticket };
+    const result: TicketWithAction = { id: existingId, action: decision.action, ticket };
+    if (decision.bridge) result.bridged = true;
+    return result;
   });
 
   return run();

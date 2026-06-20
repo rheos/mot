@@ -111,7 +111,17 @@ export function listMcpTools(): ToolDef[] {
           body: { type: 'string', description: 'Full signal content or summary.' },
           source_ref: {
             type: 'string',
-            description: 'External signal ID (e.g. Gmail thread ID) — enables dedup.',
+            description:
+              'The Gmail thread ID — all messages in a conversation share one ticket ' +
+              '(`dedup_key = thread_id:ticket_type`).',
+          },
+          bridge_source_refs: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'The message ids observed in this Gmail thread — used by the one-time pre-fix ' +
+              'compatibility bridge to find a pre-fix message-keyed ticket when the primary ' +
+              'thread-id lookup misses. Omit for heartbeat, manual, and post-migration thread creates.',
           },
           needs_review: { type: 'boolean' },
           private: { type: 'boolean' },

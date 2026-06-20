@@ -68,6 +68,28 @@ describe('createTicketSchema (POST /tickets) — AC-VALIDATION', () => {
   it('7. valid POST payload parses without error', () => {
     expect(createTicketSchema.safeParse(validPost).success).toBe(true);
   });
+
+  // ── bridge_source_refs colon guard (Prompt 2, FR-15/17) ─────────────────────
+  // Same colon-free rule as ticket_type: any element with a colon would alias a candidate
+  // dedup_key, so it is rejected (not sanitized).
+  it('bridge: a bridge_source_refs element containing a colon → fields includes bridge_source_refs', async () => {
+    const fields = await fieldsFor(createTicketSchema, {
+      ...validPost,
+      bridge_source_refs: ['clean-msg-id', 'msg:with:colon'],
+    });
+    expect(fields.some((f) => f.field.startsWith('bridge_source_refs'))).toBe(true);
+  });
+
+  it('bridge: colon-free bridge_source_refs parse, and the field is omittable', () => {
+    expect(
+      createTicketSchema.safeParse({
+        ...validPost,
+        bridge_source_refs: ['msg-1', 'msg-2'],
+      }).success,
+    ).toBe(true);
+    // Omitting bridge_source_refs entirely is valid (heartbeat / manual / post-migration).
+    expect(createTicketSchema.safeParse(validPost).success).toBe(true);
+  });
 });
 
 describe('patchTicketSchema (PATCH /tickets/:id) — AC-VALIDATION', () => {
@@ -101,5 +123,26 @@ describe('patchTicketSchema (PATCH /tickets/:id) — AC-VALIDATION', () => {
     expect(
       patchTicketSchema.safeParse({ status: 'snoozed', snoozed_until: future }).success,
     ).toBe(true);
+  });
+
+  // ── AC-15 — PATCH cannot mutate ticket identity (source_ref / dedup_key) ─────
+  // The schema is not .strict(), so undeclared keys are STRIPPED silently rather than rejected.
+  // Either way the identity fields can never reach the data layer through a PATCH — the only
+  // source_ref/dedup_key writes are the create tx (incl. the in-tx bridge migration). This proves
+  // the identity-mutation path is closed to PATCH.
+  it('15. PATCH with source_ref → field is stripped, never reaches the data layer', () => {
+    const parsed = patchTicketSchema.safeParse({ body: 'x', source_ref: 'thread-evil' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect('source_ref' in parsed.data).toBe(false);
+    }
+  });
+
+  it('15b. PATCH with dedup_key → field is stripped, never reaches the data layer', () => {
+    const parsed = patchTicketSchema.safeParse({ body: 'x', dedup_key: 'thread-evil:bill-due' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect('dedup_key' in parsed.data).toBe(false);
+    }
   });
 });
