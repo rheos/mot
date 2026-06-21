@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Suspense } from 'react';
-import { Plus, Scale, Search, User } from 'lucide-react';
+import { Briefcase, Plus, Scale, Search, User } from 'lucide-react';
 import { relativeTime } from '../lib/time';
 import { SearchBox } from './SearchBox';
 import { ThemeToggle } from './ThemeToggle';
@@ -73,6 +73,17 @@ export function TopNav({ lastRun }: { lastRun: string | null }): React.JSX.Eleme
               {lastRun ? `Last run: ${relativeTime(lastRun)}` : 'No heartbeat yet'}
             </span>
           </span>
+          {/* Cross-ministry switch to the Ministry of Labour (the Upwork triage tool), served at
+              the sibling path /labour on the same origin. A raw <a> on purpose: it lives OUTSIDE
+              this app's basePath, so a next/link <Link> would wrongly rewrite it to /mot/labour. */}
+          <a
+            href="/labour"
+            title="Ministry of Labour"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-ministry-sm border border-border bg-surface-2 px-3 text-sm font-semibold text-ink-2 transition hover:border-gold-line hover:text-gold-bright focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
+          >
+            <Briefcase aria-hidden="true" className="h-4 w-4" strokeWidth={1.9} />
+            <span className="hidden lg:inline">Ministry of Labour</span>
+          </a>
           <ThemeToggle />
           <Link
             href="/account"

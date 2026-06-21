@@ -18,6 +18,7 @@ import { EmptyState } from '../../../components/ui-states';
 import { CommentBox } from '../../../components/CommentBox';
 import { MinistryReassign } from '../../../components/MinistryReassign';
 import { StatusControls } from '../../../components/StatusControls';
+import { CopyButton } from '../../../components/CopyButton';
 
 // Ticket detail view (FR-UI-3, FR-UI-4). Server Component: it reads the ticket + its full comment
 // history in-process via getTicket(id, true) — the route is behind the session middleware, so
@@ -146,6 +147,21 @@ export default function TicketDetailPage({
               </Tag>
             )}
             {ticket.private && <Tag>Private</Tag>}
+          </div>
+          {/* The opaque ticket reference — visible and one-click copyable to hand to the assistant
+              (it resolves the id via mot_get_ticket). */}
+          <div className="mt-[10px]">
+            <CopyButton
+              value={ticket.id}
+              title="Copy ticket ID"
+              iconClassName="h-3.5 w-3.5 shrink-0"
+              className="inline-flex max-w-full items-center gap-2 rounded-ministry-xs border border-border bg-surface-2 px-[9px] py-[4px] font-mono text-[12px] text-ink-2 transition hover:border-gold-line hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
+            >
+              <span className="font-sans text-[10px] font-bold uppercase tracking-[0.12em] text-ink-3">
+                ID
+              </span>
+              <span className="break-all">{ticket.id}</span>
+            </CopyButton>
           </div>
         </div>
       </div>

@@ -22,6 +22,7 @@ import {
 import { MinistryTokens, SeverityTokens } from '../lib/tokens';
 import { relativeTime } from '../lib/time';
 import { SnoozePopover } from './SnoozePopover';
+import { CopyButton } from './CopyButton';
 import type { Ministry, Severity } from '../lib/enums';
 import { apiPath } from '../lib/client/base-path';
 
@@ -347,6 +348,11 @@ export function TriageRow({
           className="pointer-events-none hidden shrink-0 translate-x-1.5 items-center gap-[5px] opacity-0 transition duration-200 group-hover:translate-x-0 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:translate-x-0 group-focus-within:opacity-100 group-focus-within:pointer-events-auto sm:flex"
           onClick={(e) => e.stopPropagation()}
         >
+          <CopyButton
+            value={ticket.id}
+            title="Copy ticket ID"
+            className={`${actionClass} hover:border-gold-line hover:text-gold-bright`}
+          />
           {showDismiss && (
             <button
               type="button"
