@@ -252,10 +252,12 @@ export async function requireSession(req: Request): Promise<string | null> {
   }
 }
 
-// The private gate the data layer (P6) consumes: true ⇒ a valid session ⇒ includePrivate.
-// API-key-only requests carry no session cookie → false → the SQL adds `AND private = 0`.
+// The private gate the data layer (P6) consumes: true ⇒ authenticated ⇒ includePrivate.
+// Both a valid session cookie AND a valid API key grant full visibility — this is a
+// single-user system and the API key only goes to Taylor/Rheo, so no access distinction applies.
 export async function isSessionRequest(req: Request): Promise<boolean> {
-  return (await requireSession(req)) !== null;
+  if ((await requireSession(req)) !== null) return true;
+  return apiKeyGuard(req);
 }
 
 // Minimal Cookie-header parser — pulls one named cookie from a bare Request.
