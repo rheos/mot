@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { createId } from '@paralleldrive/cuid2';
+import { randomBytes } from 'node:crypto';
 import { getDb } from '../db/client';
 import { nowIso } from './time';
 import {
@@ -141,6 +142,19 @@ function addSystemComment(
   ).run(createId(), ticketId, author, body, at);
 }
 
+// Ticket IDs are short, copy-able 8-char hex (4 random bytes) so they're easy to read aloud and
+// hand to the assistant — unlike the cuid2 we use for the internal, far-more-numerous comment and
+// classification_audit rows. 32 bits is ample for a personal-scale ticket set, but we still probe
+// for a free value inside the create transaction so a clash can never slip past the PK.
+function allocateTicketId(tx: BetterSqlite3.Database): string {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const id = randomBytes(4).toString('hex');
+    const clash = tx.prepare('SELECT 1 FROM ticket WHERE id = ?').get(id);
+    if (!clash) return id;
+  }
+  throw new Error('[MOT] allocateTicketId: no free 8-hex ticket id after 12 attempts');
+}
+
 // ── createTicket (FR-API-1, dedup) ────────────────────────────────────────────
 export function createTicket(input: CreateTicketInput): TicketWithAction {
   const db = getDb();
@@ -161,7 +175,7 @@ export function createTicket(input: CreateTicketInput): TicketWithAction {
     const now = nowIso();
 
     if (decision.action === 'created') {
-      const id = createId();
+      const id = allocateTicketId(db);
       const dedupKey =
         sourceRef !== null ? computeDedupKey(sourceRef, input.ticket_type) : null;
 
