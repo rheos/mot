@@ -3,7 +3,10 @@ import { buildStatus } from './status';
 import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './validation';
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
-import { writeMemory, getActiveMemory } from './memory';
+import { writeMemory, getActiveMemory, searchActiveMemory } from './memory';
+import { listThreads, getThread, createThread, linkThreadSession } from './topics';
+import { getEntity, searchEntities, relatedEntities, type EntityRecord } from './graph';
+import { listNotes, confirmNote } from './procedural';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
 
@@ -292,15 +295,115 @@ export function listMcpTools(): ToolDef[] {
     {
       name: 'memory_recent',
       description:
-        'Return active (non-superseded, non-conflicted) memory items. ' +
-        'Input is LOCKED to { chat_id?, limit? } only — no filter, query, or type params. ' +
-        'Any search or filtering over memory items is Track 2 (entity_search, not available here).',
+        'Return active (non-superseded, non-conflicted) memory items, most recent first. ' +
+        'Pass q to keyword-search them by FTS5 relevance instead. ' +
+        'Entity-graph / topic-thread / procedural-note search are separate Track-2 tools.',
       inputSchema: {
         type: 'object',
         properties: {
           chat_id: { type: 'string', description: 'Restrict to one chat. Omit to return all active items.' },
           limit:   { type: 'integer', minimum: 1, maximum: 50, description: 'Max items to return. Default 20.' },
+          q:       { type: 'string', description: 'Optional keyword search (FTS5 porter-stemmed). When provided, filters results by match. Empty string ignored.' },
         },
+      },
+    },
+    {
+      name: 'topic_threads',
+      description:
+        "List topic threads, or get one thread's sessions when label is given.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Canonical slug. Omit to list all threads.' },
+        },
+      },
+    },
+    {
+      name: 'topic_thread_create',
+      description: 'Create a new topic thread.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          slug:  { type: 'string', description: 'Kebab-case canonical label, e.g. alex-school.' },
+          title: { type: 'string' },
+          notes: { type: 'string' },
+        },
+        required: ['slug', 'title'],
+      },
+    },
+    {
+      name: 'topic_thread_link',
+      description: 'Link a session to a topic thread. Idempotent.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          slug:       { type: 'string' },
+          session_id: { type: 'string' },
+        },
+        required: ['slug', 'session_id'],
+      },
+    },
+    {
+      name: 'entity_get',
+      description:
+        'Get a single entity record plus its 1-hop relations. Discovery tool — returns ' +
+        'superseded/expired entities too, by design (use entity_search for active-only).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'entity_search',
+      description: 'Search entities by keyword. Returns active records only by default.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          q:    { type: 'string', description: 'Case-insensitive keyword.' },
+          type: { type: 'string', enum: ['Person', 'Project', 'Deadline', 'Preference', 'Fact'] },
+          unconfirmed_only: { type: 'boolean', description: 'Return unconfirmed candidates only.' },
+        },
+        required: ['q'],
+      },
+    },
+    {
+      name: 'entity_related',
+      description:
+        'Traverse entity relations from a starting entity. Traversal includes ' +
+        'superseded/expired entities, by design.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id:   { type: 'string' },
+          rel:  { type: 'string', description: 'Relation type filter, e.g. child_of.' },
+          hops: { type: 'integer', minimum: 1, maximum: 3, description: 'Degrees of separation. Default 1.' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'procedural_notes_list',
+      description: 'List procedural notes. Default: confirmed active notes grouped by category.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          category: { type: 'string' },
+          pending:  { type: 'boolean', description: 'Return unconfirmed candidates instead.' },
+        },
+      },
+    },
+    {
+      name: 'procedural_note_confirm',
+      description: 'Confirm a procedural note candidate.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+        },
+        required: ['id'],
       },
     },
   ];
@@ -385,8 +488,69 @@ export async function callMcpTool(
     case 'memory_recent': {
       const chatId = typeof args.chat_id === 'string' ? args.chat_id : undefined;
       const limit  = typeof args.limit === 'number' ? args.limit : 20;
+      const q = typeof args.q === 'string' ? args.q : '';
+      // A non-empty q switches to FTS keyword search; otherwise return recent active items.
+      if (q.trim() !== '') {
+        return text(searchActiveMemory(q, chatId, limit));
+      }
       return text(getActiveMemory(chatId, limit));
     }
+
+    // ── Track-2 tools (AC-12): these dispatch cases NEVER throw. The lib functions return
+    //    typed { error } objects on failure; we return text() of them as a SUCCESSFUL MCP
+    //    result (isError:false at the route level), so the caller gets structured JSON to
+    //    branch on — not a plain string inside an isError:true envelope (the Track-1 pattern
+    //    at app/api/mcp/route.ts lines 71–85, which the throwing cases above rely on).
+
+    case 'topic_threads': {
+      const label = typeof args.label === 'string' && args.label !== '' ? args.label : undefined;
+      // getThread returns a typed { error: 'thread_not_found' } on a miss — return text() of it.
+      return text(label !== undefined ? getThread(label) : listThreads());
+    }
+
+    case 'topic_thread_create':
+      // createThread returns a typed { error } on invalid_slug / slug_exists — return text() of it.
+      return text(createThread(
+        args.slug as string,
+        args.title as string,
+        typeof args.notes === 'string' ? args.notes : undefined,
+      ));
+
+    case 'topic_thread_link':
+      // linkThreadSession returns a typed { error } on thread_not_found / session_not_found.
+      return text(linkThreadSession(args.slug as string, args.session_id as string));
+
+    case 'entity_get': {
+      // NOTE: getEntity returns superseded/expired entities too — intentional (discovery tool).
+      const result = getEntity(args.id as string);
+      if (result === null) return text({ error: 'entity_not_found', id: args.id });
+      return text(result);
+    }
+
+    case 'entity_search':
+      return text(searchEntities(
+        args.q as string,
+        args.type as EntityRecord['type'] | undefined,
+        typeof args.unconfirmed_only === 'boolean' ? args.unconfirmed_only : undefined,
+      ));
+
+    case 'entity_related':
+      // NOTE: relatedEntities traversal includes superseded/expired — intentional.
+      return text(relatedEntities(
+        args.id as string,
+        typeof args.rel === 'string' ? args.rel : undefined,
+        typeof args.hops === 'number' ? args.hops : 1,
+      ));
+
+    case 'procedural_notes_list':
+      return text(listNotes(
+        typeof args.category === 'string' ? args.category : undefined,
+        typeof args.pending === 'boolean' ? args.pending : false,
+      ));
+
+    case 'procedural_note_confirm':
+      // confirmNote returns a typed { error } on not_found / already_confirmed / superseded.
+      return text(confirmNote(args.id as number));
 
     default:
       throw new Error(`Unknown tool: ${name}`);
