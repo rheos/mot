@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -224,10 +224,32 @@ function FilterGroup({
   onToggle: (value: string) => void;
 }): React.JSX.Element {
   const activeCount = activeValues.length;
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  // The chip row is overflow-x-auto (horizontal scroll), which forces overflow-y to clip — an
+  // absolutely positioned menu would be cut off by it. Anchor the menu with position:fixed
+  // (escapes the clip) computed from the button rect, recomputed on scroll/resize. It stays a DOM
+  // child of the bar, so the wrapRef outside-click handler still counts clicks inside it.
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const place = (): void => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 7, left: r.left });
+    };
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [isOpen]);
 
   return (
     <div className="relative shrink-0">
       <button
+        ref={btnRef}
         type="button"
         onClick={onToggleOpen}
         aria-expanded={isOpen}
@@ -251,7 +273,14 @@ function FilterGroup({
         />
       </button>
       {isOpen && (
-        <div className="absolute left-0 top-full z-50 mt-[7px] flex min-w-[210px] flex-col gap-px rounded-[13px] border border-border bg-surface p-[7px] shadow-pop">
+        <div
+          style={
+            pos
+              ? { position: 'fixed', top: pos.top, left: pos.left }
+              : { position: 'fixed', visibility: 'hidden' }
+          }
+          className="z-50 flex min-w-[210px] flex-col gap-px rounded-[13px] border border-border bg-surface p-[7px] shadow-pop"
+        >
           {options.map((opt) => {
             const checked = activeValues.includes(opt.value);
             return (
