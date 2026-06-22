@@ -536,17 +536,19 @@ describe('GET /api/memory route (AC-14)', () => {
   });
 });
 
-// ── AC-15: memory_recent schema locked ───────────────────────────────────────
+// ── AC-15: memory_recent schema ──────────────────────────────────────────────
+// Phase 5 (Recallatron) deliberately extends memory_recent with an FTS `q` arm. The schema
+// is now {chat_id?, limit?, q?} — still no filter/type params (those are separate Track-2
+// tools), but q is the sanctioned keyword search over active memory items.
 
-describe('memory_recent schema locked to {chat_id?, limit?} (AC-15)', () => {
-  it('inputSchema.properties has only chat_id and limit — no filter, query, or type', () => {
+describe('memory_recent schema {chat_id?, limit?, q?} (AC-15)', () => {
+  it('inputSchema.properties is chat_id, limit, q — no filter or type', () => {
     const tools = listMcpTools();
     const tool = tools.find((t) => t.name === 'memory_recent');
     expect(tool).toBeDefined();
     const props = Object.keys((tool!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
-    expect(props.sort()).toEqual(['chat_id', 'limit'].sort());
+    expect(props.sort()).toEqual(['chat_id', 'limit', 'q'].sort());
     expect(props).not.toContain('filter');
-    expect(props).not.toContain('query');
     expect(props).not.toContain('type');
   });
 });
@@ -588,6 +590,15 @@ const EXPECTED_MCP_TOOLS = [
   'mcp__mot__summarize_and_archive',
   'mcp__mot__write_memory',
   'mcp__mot__memory_recent',
+  // Track-2 (Recallatron Phase 5) tools.
+  'mcp__mot__topic_threads',
+  'mcp__mot__topic_thread_create',
+  'mcp__mot__topic_thread_link',
+  'mcp__mot__entity_get',
+  'mcp__mot__entity_search',
+  'mcp__mot__entity_related',
+  'mcp__mot__procedural_notes_list',
+  'mcp__mot__procedural_note_confirm',
 ];
 
 describe('allowlist sync guard (EC-10)', () => {

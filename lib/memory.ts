@@ -5,6 +5,7 @@
 
 import { getDb } from '../db/client';
 import { nowIso } from './time';
+import { ftsPhrase } from './fts';
 
 export type MemoryType = 'fact' | 'preference' | 'deadline' | 'person';
 
@@ -243,4 +244,43 @@ export function getActiveMemory(chatId?: string, limit = 20): MemoryRow[] {
        ORDER BY ts DESC LIMIT ?`,
     )
     .all(limit) as MemoryRow[];
+}
+
+// FTS5 keyword search over active memory items (Track-2 — the `q` arm of memory_recent).
+// Same active-only filter as getActiveMemory (conflict_flag = 0 AND superseded_by IS NULL),
+// but ranked by FTS5 relevance instead of recency. Empty/whitespace q returns [] — an empty
+// MATCH string is not a useful query and FTS5 rejects it, so the caller's no-q path
+// (getActiveMemory) owns the "return everything" behavior.
+//
+// memory_items_fts is the external-content index (rowid = memory_items.id, db/memory_fts.sql);
+// JOIN it back to memory_items to read the full row. ftsPhrase wraps q as a quoted phrase so
+// hyphens/apostrophes don't trip the FTS5 query grammar (same as searchTurns in conversation.ts).
+export function searchActiveMemory(q: string, chatId?: string, limit = 20): MemoryRow[] {
+  if (q.trim() === '') return [];
+
+  const db = getDb();
+  const phrase = ftsPhrase(q);
+
+  if (chatId !== undefined) {
+    return db
+      .prepare(
+        `SELECT memory_items.* FROM memory_items
+         JOIN memory_items_fts ON memory_items_fts.rowid = memory_items.id
+         WHERE memory_items_fts MATCH ?
+           AND conflict_flag = 0 AND superseded_by IS NULL
+           AND memory_items.chat_id = ?
+         ORDER BY rank LIMIT ?`,
+      )
+      .all(phrase, chatId, limit) as MemoryRow[];
+  }
+
+  return db
+    .prepare(
+      `SELECT memory_items.* FROM memory_items
+       JOIN memory_items_fts ON memory_items_fts.rowid = memory_items.id
+       WHERE memory_items_fts MATCH ?
+         AND conflict_flag = 0 AND superseded_by IS NULL
+       ORDER BY rank LIMIT ?`,
+    )
+    .all(phrase, limit) as MemoryRow[];
 }

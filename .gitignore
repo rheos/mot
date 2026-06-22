@@ -10,6 +10,9 @@ backups/
 # Local DB backups (prod-data snapshots taken during dev — never commit)
 .local-db-backup/
 
+# Recallatron entity graph — server-only live data, same class as mot.db (OQ-1=B)
+/ontology/
+
 # Playwright e2e artifacts (generated per run)
 /test-results/
 /playwright-report/
