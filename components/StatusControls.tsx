@@ -13,9 +13,11 @@ import { patchTicketClient } from '../lib/client/triage';
 export function StatusControls({
   ticketId,
   status,
+  nextTicketId,
 }: {
   ticketId: string;
   status: Status;
+  nextTicketId?: string;
 }): React.JSX.Element {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -32,7 +34,13 @@ export function StatusControls({
       setError('Action failed — try again');
       return;
     }
-    startTransition(() => router.refresh());
+    if (payload.status === 'done') {
+      startTransition(() =>
+        nextTicketId ? router.push(`/tickets/${nextTicketId}`) : router.push('/'),
+      );
+    } else {
+      startTransition(() => router.refresh());
+    }
   }
 
   const buttonBase =

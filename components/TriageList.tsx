@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { RefreshCw } from 'lucide-react';
 import { TriageRow, type TriageTicketView } from './TriageRow';
 import { WakePending } from './WakePending';
 import { FilterChips } from './FilterChips';
@@ -51,6 +52,7 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
     wakePending: initial.wakePending,
   });
   const [error, setError] = useState<boolean>(initial.error);
+  const [refreshing, setRefreshing] = useState(false);
   const fetchedFor = useRef<string | null>(null);
 
   async function load(): Promise<void> {
@@ -94,6 +96,12 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
     void load();
   }
 
+  async function refresh(): Promise<void> {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
+
   if (error) {
     return (
       <ErrorState message="Could not load tickets — try again" onRetry={retry} />
@@ -112,9 +120,22 @@ export function TriageList({ initial }: { initial: InitialData }): React.JSX.Ele
           <h2 className="font-serif text-xs font-semibold uppercase tracking-[0.18em] text-gold-soft">
             {listTitle(initial)}
           </h2>
-          <span className="text-[12.5px] text-ink-3">
-            {data.tickets.length} {data.tickets.length === 1 ? 'ticket' : 'tickets'}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-[12.5px] text-ink-3">
+              {data.tickets.length} {data.tickets.length === 1 ? 'ticket' : 'tickets'}
+            </span>
+            <button
+              onClick={() => void refresh()}
+              disabled={refreshing}
+              title="Refresh"
+              className="text-ink-3 transition-colors hover:text-ink-1 disabled:opacity-40"
+            >
+              <RefreshCw
+                size={13}
+                className={refreshing ? 'animate-spin' : ''}
+              />
+            </button>
+          </div>
         </div>
         {data.tickets.length === 0 ? (
           <div className="px-4 py-5">

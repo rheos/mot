@@ -11,7 +11,7 @@ import {
   Waves,
   type LucideIcon,
 } from 'lucide-react';
-import { getTicket, type TicketWithComments } from '../../../lib/tickets';
+import { getTicket, listTickets, type TicketWithComments } from '../../../lib/tickets';
 import { MinistryTokens, SeverityTokens } from '../../../lib/tokens';
 import { relativeTime } from '../../../lib/time';
 import { EmptyState } from '../../../components/ui-states';
@@ -57,10 +57,17 @@ export default function TicketDetailPage({
   params: { id: string };
 }): React.JSX.Element {
   let ticket: TicketWithComments | null = null;
+  let nextTicketId: string | undefined;
   let error = false;
 
   try {
     ticket = getTicket(params.id, true);
+    // Find the next ticket in the default open list so "Done" can advance automatically.
+    const openList = listTickets({ includePrivate: true }).tickets;
+    const idx = openList.findIndex((t) => t.id === params.id);
+    if (idx !== -1 && idx + 1 < openList.length) {
+      nextTicketId = openList[idx + 1].id;
+    }
   } catch {
     error = true;
   }
@@ -167,7 +174,7 @@ export default function TicketDetailPage({
       </div>
 
       <div className="mt-[18px]">
-        <StatusControls ticketId={ticket.id} status={ticket.status} />
+        <StatusControls ticketId={ticket.id} status={ticket.status} nextTicketId={nextTicketId} />
       </div>
 
       <DetailCard title="Details">
