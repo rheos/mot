@@ -131,20 +131,21 @@ describe('lib/topics — topic threads', () => {
 
   it('listThreads returns the correct session_count per thread', () => {
     createThread('count-zero', 'Count zero');
+    createThread('count-one', 'Count one');
     createThread('count-two', 'Count two');
+    linkThreadSession('count-one', 's-alpha');
     linkThreadSession('count-two', 's-alpha');
     linkThreadSession('count-two', 's-beta');
 
     const all = listThreads();
+    // Assert by slug, not array position: these threads can share a last_active_at at
+    // millisecond resolution, so their relative order is not guaranteed.
     const zero = all.find((t) => t.slug === 'count-zero');
+    const one = all.find((t) => t.slug === 'count-one');
     const two = all.find((t) => t.slug === 'count-two');
     expect(zero?.session_count).toBe(0);
+    expect(one?.session_count).toBe(1);
     expect(two?.session_count).toBe(2);
-
-    // Ordered by last_active_at DESC — count-two was linked after count-zero was created.
-    const zeroIdx = all.findIndex((t) => t.slug === 'count-zero');
-    const twoIdx = all.findIndex((t) => t.slug === 'count-two');
-    expect(twoIdx).toBeLessThan(zeroIdx);
   });
 
   it('getThread happy path returns the thread plus its linked sessions, newest first', () => {

@@ -104,7 +104,7 @@ export function listThreads(): TopicThreadWithCount[] {
       `SELECT t.*,
               (SELECT count(*) FROM topic_thread_session s WHERE s.slug = t.slug) AS session_count
        FROM topic_thread t
-       ORDER BY t.last_active_at DESC`,
+       ORDER BY t.last_active_at DESC, t.slug ASC`,
     )
     .all() as TopicThreadWithCount[];
 }
