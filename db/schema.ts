@@ -144,6 +144,59 @@ export const memoryItems = sqliteTable(
   }),
 );
 
+// ── Recallatron (Track-2 memory) — Phase 1 schema ──────────────────────────────
+// These tables are created by HAND-WRITTEN migrations (0004/0005/0006), NOT drizzle-kit.
+// They are declared here for TYPED READS ONLY — do NOT run drizzle-kit generate against
+// them (that would write them into the journal and conflict with the hand-written files).
+
+// topic_thread — a human-readable topic grouping sessions. Keyed on slug.
+export const topicThread = sqliteTable('topic_thread', {
+  slug:           text('slug').primaryKey(),
+  title:          text('title').notNull(),
+  notes:          text('notes'),
+  created_at:     text('created_at').notNull(),
+  last_active_at: text('last_active_at').notNull(),
+});
+
+// topic_thread_session — many-to-many join between topic_thread and session_digest.
+// session_id references session_digest(session_id) (the UNIQUE column), not its PK.
+export const topicThreadSession = sqliteTable(
+  'topic_thread_session',
+  {
+    slug:       text('slug').notNull().references(() => topicThread.slug),
+    session_id: text('session_id').notNull().references(() => sessionDigest.session_id),
+    added_at:   text('added_at').notNull(),
+  },
+  (t) => ({
+    idxTtsSessionId: index('idx_tts_session_id').on(t.session_id),
+  }),
+);
+
+// procedural_notes — append-only how-Taylor-works notes with a supersede chain (like
+// memory_items). note_norm is the normalized form for dedup/lookup. source_session_id
+// references session_digest(session_id) (the UNIQUE column), not its PK.
+export const proceduralNotes = sqliteTable(
+  'procedural_notes',
+  {
+    id:                integer('id').primaryKey({ autoIncrement: true }),
+    category:          text('category').notNull(),
+    note:              text('note').notNull(),
+    note_norm:         text('note_norm').notNull(),
+    source_session_id: text('source_session_id').notNull().references(() => sessionDigest.session_id),
+    confirmed:         integer('confirmed', { mode: 'boolean' }).notNull().default(false),
+    confirmed_at:      text('confirmed_at'),
+    superseded_by:     integer('superseded_by').references((): any => proceduralNotes.id),
+    mention_count:     integer('mention_count').notNull().default(1),
+    chat_id:           text('chat_id'),
+    created_at:        text('created_at').notNull(),
+    ts:                text('ts').notNull(),
+  },
+  (t) => ({
+    idxPnCategory: index('idx_pn_category').on(t.category, t.confirmed, t.superseded_by),
+    idxPnNoteNorm: index('idx_pn_note_norm').on(t.note_norm),
+  }),
+);
+
 // app_secret — API-key argon2 hash + the UI login credential. App-level operational state,
 // NOT part of the frozen 4-table contract. Lives in 0000_init.sql because it has no FK
 // dependency and is needed at first boot. One row only (id always 1).

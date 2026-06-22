@@ -28,7 +28,13 @@ export function getDrizzle() {
 // _journal.json (drizzle-kit has no DSL for FTS5 virtual tables / triggers — see
 // db/fts.sql). The drizzle migrator only runs journal-tracked files, so we apply the
 // extras here in lexicographic order, idempotently, recording them in our own ledger.
-const HAND_WRITTEN_MIGRATIONS = ['0001_fts.sql', '0003_conversation_fts.sql'];
+const HAND_WRITTEN_MIGRATIONS = [
+  '0001_fts.sql',
+  '0003_conversation_fts.sql',
+  '0004_topic_threads.sql',
+  '0005_procedural_notes.sql',
+  '0006_memory_fts.sql',
+];
 
 function applyHandWrittenMigrations(db: DB, migrationsFolder: string): void {
   db.exec(
