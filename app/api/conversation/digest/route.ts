@@ -1,6 +1,7 @@
 import { apiKeyGuard, unauthorized } from '../../../../lib/auth';
 import { parsePositiveInt, internalError } from '../../../../lib/validation';
 import { upsertDigest } from '../../../../lib/digest';
+import { runExtraction } from '../../../../lib/extraction';
 
 // POST /api/conversation/digest
 // Write-back endpoint for bot.py run_digest. Does NOT spawn claude -p or any subprocess.
@@ -38,6 +39,15 @@ export async function POST(req: Request): Promise<Response> {
       procedural_raw: typeof b.procedural_raw === 'string' ? b.procedural_raw : null,
       parse_error:    b.parse_error === true,
     });
+
+    // Recallatron extraction pass — fire-and-forget after digest persisted (A-6, R3).
+    // Extraction failure must NEVER propagate to the caller — the digest row is already written.
+    if (row.parse_error === 0 && (row.entity_draft !== null || row.procedural_raw !== null)) {
+      runExtraction(row).catch((e: unknown) => {
+        console.error('[MOT] runExtraction error:', e);
+      });
+    }
+
     return Response.json(row, { status: 200 });
   } catch (e: unknown) {
     // eslint-disable-next-line no-console
