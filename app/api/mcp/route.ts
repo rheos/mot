@@ -4,7 +4,9 @@ import { callMcpTool, listMcpTools } from '../../../lib/mcp-tools';
 // ── MCP Streamable HTTP endpoint (protocol version 2024-11-05) ────────────────
 // Single POST handler for all JSON-RPC 2.0 messages. Auth: Bearer API key (same
 // as the REST surface). Responses are always application/json — no SSE streaming
-// (all tools are synchronous). Notifications (no id) return 202 with no body.
+// (tools were synchronous until notify_robin (Phase 1); notify_robin does async
+// network I/O — callMcpTool is awaited regardless). Notifications (no id) return 202
+// with no body.
 
 const PROTOCOL_VERSION = '2024-11-05';
 

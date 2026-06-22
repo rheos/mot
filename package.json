@@ -9,8 +9,8 @@
     "lint": "next lint",
     "db:generate": "drizzle-kit generate:sqlite",
     "db:migrate": "tsx db/migrate.ts",
-    "test": "vitest run tests/integration",
-    "test:watch": "vitest tests/integration",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:e2e": "playwright test tests/e2e",
     "typecheck": "tsc --noEmit"
   },
