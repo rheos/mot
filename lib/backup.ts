@@ -22,6 +22,27 @@ export function vacuumInto(backupDir: string): string {
   return dest;
 }
 
+/**
+ * Copy graph.jsonl to backupDir alongside mot.db. If the graph file does not yet exist,
+ * log a warning and return — the DB backup must not be interrupted (FR-13, EC-7).
+ * Named and exported so it is unit-testable, mirroring vacuumInto.
+ */
+export function backupGraph(backupDir: string): void {
+  const src =
+    process.env.MOT_GRAPH_PATH ??
+    path.join(process.cwd(), 'ontology', 'graph.jsonl');
+  if (!fs.existsSync(src)) {
+    // eslint-disable-next-line no-console
+    console.warn('[MOT] Graph backup skipped — graph.jsonl not found:', src);
+    return;
+  }
+  fs.mkdirSync(backupDir, { recursive: true });
+  const dest = path.join(backupDir, 'graph.jsonl');
+  fs.copyFileSync(src, dest);
+  // eslint-disable-next-line no-console
+  console.log(`[MOT] Graph backup written: ${dest}`);
+}
+
 // scheduleNightly registers the 02:00 cron job. Started once from instrumentation.ts at boot.
 // A failed backup is logged, not thrown — a backup error must never take the server down.
 export function scheduleNightly(): void {
@@ -34,6 +55,14 @@ export function scheduleNightly(): void {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT] Nightly backup failed:', e);
+    }
+    // Graph backup runs in its OWN try/catch, AFTER vacuumInto. graph.jsonl is irreplaceable
+    // live data alongside mot.db (FR-13); a copy failure here must never abort the DB backup.
+    try {
+      backupGraph(backupDir);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT] Graph backup failed:', e);
     }
   });
   // eslint-disable-next-line no-console

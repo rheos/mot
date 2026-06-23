@@ -476,6 +476,31 @@ export async function callMcpTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolContent> {
+  // Pre-switch arg-shape guard for typed Track-2/3 tools (FR-14).
+  // The three Zod-validated tools (mot_create_ticket, mot_update_ticket, write_memory)
+  // validate inside their own cases and are deliberately absent from this table.
+  const ARG_SPECS: Record<string, { name: string; type: 'string' | 'integer' }[]> = {
+    topic_thread_create:     [{ name: 'slug', type: 'string' }, { name: 'title', type: 'string' }],
+    topic_thread_link:       [{ name: 'slug', type: 'string' }, { name: 'session_id', type: 'string' }],
+    entity_get:              [{ name: 'id', type: 'string' }],
+    entity_search:           [{ name: 'q', type: 'string' }],
+    entity_related:          [{ name: 'id', type: 'string' }],
+    procedural_note_confirm: [{ name: 'id', type: 'integer' }],
+    entity_confirm:          [{ name: 'id', type: 'string' }],
+    entity_supersede:        [{ name: 'id', type: 'string' }, { name: 'superseded_by_id', type: 'string' }],
+  };
+  const specs = ARG_SPECS[name];
+  if (specs) {
+    for (const spec of specs) {
+      const v = args[spec.name];
+      const ok =
+        spec.type === 'string'
+          ? typeof v === 'string' && v !== ''
+          : typeof v === 'number' && Number.isInteger(v);  // 'integer' check (EC-8)
+      if (!ok) return text({ error: 'invalid_arg', arg: spec.name });
+    }
+  }
+
   switch (name) {
     case 'mot_list_tickets': {
       const opts: ListOpts = { includePrivate: true };
