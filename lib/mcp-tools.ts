@@ -4,7 +4,7 @@ import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './vali
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory } from './memory';
-import { listThreads, getThread, createThread, linkThreadSession } from './topics';
+import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
 import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
 import { memoryContext } from './memory-context';
@@ -465,6 +465,21 @@ export function listMcpTools(): ToolDef[] {
         'nightly job handles routine compaction automatically.',
       inputSchema: { type: 'object', properties: {} },
     },
+    {
+      name: 'topic_thread_summarize',
+      description:
+        'Fetch and budget a topic thread for cross-session synthesis. Returns the thread\'s ' +
+        'linked sessions (most recent N, truncated to 50 sessions or ~40k chars of combined ' +
+        'summaries). Rheo synthesizes the returned sessions — mot is model-free. Returns ' +
+        '{ error: "thread_not_found" } when the slug is unknown.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          slug: { type: 'string', description: 'The topic thread slug.' },
+        },
+        required: ['slug'],
+      },
+    },
   ];
 }
 
@@ -508,6 +523,7 @@ export async function callMcpTool(
   const ARG_SPECS: Record<string, { name: string; type: 'string' | 'integer' }[]> = {
     topic_thread_create:     [{ name: 'slug', type: 'string' }, { name: 'title', type: 'string' }],
     topic_thread_link:       [{ name: 'slug', type: 'string' }, { name: 'session_id', type: 'string' }],
+    topic_thread_summarize:  [{ name: 'slug', type: 'string' }],
     entity_get:              [{ name: 'id', type: 'string' }],
     entity_search:           [{ name: 'q', type: 'string' }],
     entity_related:          [{ name: 'id', type: 'string' }],
@@ -755,6 +771,9 @@ export async function callMcpTool(
       await compactGraph(graphPath);
       return text({ ok: true, message: 'Graph compacted successfully.' });
     }
+
+    case 'topic_thread_summarize':
+      return text(summarizeThread(args.slug as string));
 
     default:
       throw new Error(`Unknown tool: ${name}`);

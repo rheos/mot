@@ -604,6 +604,7 @@ const EXPECTED_MCP_TOOLS = [
   // Track-4 tools
   'mcp__mot__memory_context',
   'mcp__mot__graph_compact',
+  'mcp__mot__topic_thread_summarize',
 ];
 
 describe('allowlist sync guard (EC-10)', () => {
