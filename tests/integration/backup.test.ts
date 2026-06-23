@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +12,7 @@ import { setupTempDb, cleanupTempDb, createInput } from './_helpers';
 
 const dbPath = setupTempDb('backup');
 const { createTicket } = await import('../../lib/tickets');
-const { vacuumInto } = await import('../../lib/backup');
+const { vacuumInto, backupGraph } = await import('../../lib/backup');
 
 const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-backup-dest-'));
 
@@ -44,6 +44,49 @@ describe('FR-DB-2 — vacuumInto nightly backup', () => {
       expect(n).toBe(1);
     } finally {
       snap.close();
+    }
+  });
+});
+
+// FR-13 / EC-7 — backupGraph copies graph.jsonl alongside mot.db. graph.jsonl is irreplaceable
+// live data (gitignored, same class as mot.db); the nightly backup must include it. A missing
+// graph file is a no-op (warn + return), never an error — it must not interrupt the DB backup.
+
+describe('FR-13 — backupGraph nightly graph snapshot', () => {
+  afterAll(() => {
+    delete process.env.MOT_GRAPH_PATH;
+  });
+
+  it('AC-9a: copies graph.jsonl from MOT_GRAPH_PATH into backupDir, content intact', () => {
+    const graphDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-graph-src-'));
+    const graphSrc = path.join(graphDir, 'graph.jsonl');
+    const content = '{"id":"e1","label":"Taylor"}\n{"id":"e2","label":"SampleApp"}\n';
+    fs.writeFileSync(graphSrc, content);
+    process.env.MOT_GRAPH_PATH = graphSrc;
+
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-graph-dest-'));
+    try {
+      backupGraph(dest);
+      const copied = path.join(dest, 'graph.jsonl');
+      expect(fs.existsSync(copied)).toBe(true);
+      expect(fs.readFileSync(copied, 'utf8')).toBe(content);
+    } finally {
+      fs.rmSync(graphDir, { recursive: true, force: true });
+      fs.rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it('AC-9b (EC-7): missing graph.jsonl → no-op (warns, no dest written, no throw)', () => {
+    process.env.MOT_GRAPH_PATH = path.join(os.tmpdir(), 'mot-graph-does-not-exist', 'graph.jsonl');
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-graph-dest-missing-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => backupGraph(dest)).not.toThrow();
+      expect(fs.existsSync(path.join(dest, 'graph.jsonl'))).toBe(false);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      fs.rmSync(dest, { recursive: true, force: true });
     }
   });
 });

@@ -5,7 +5,7 @@ import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession } from './topics';
-import { getEntity, searchEntities, relatedEntities, type EntityRecord } from './graph';
+import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
@@ -385,6 +385,27 @@ export function listMcpTools(): ToolDef[] {
       },
     },
     {
+      name: 'entity_confirm',
+      description: 'Confirm an entity candidate, marking it as verified. Returns the updated EntityRecord. Returns { error: "not_found" } if the entity does not exist or is superseded. Returns { error: "already_confirmed" } if it is already confirmed.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: { id: { type: 'string', description: 'Entity id to confirm.' } },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'entity_supersede',
+      description: 'Mark entity `id` as superseded by `superseded_by_id`. Returns { ok: true, id, superseded_by_id }. Returns typed errors for unknown ids or self-supersede.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          id: { type: 'string', description: 'Entity id to supersede (the one being replaced).' },
+          superseded_by_id: { type: 'string', description: 'Entity id that replaces it.' },
+        },
+        required: ['id', 'superseded_by_id'],
+      },
+    },
+    {
       name: 'procedural_notes_list',
       description: 'List procedural notes. Default: confirmed active notes grouped by category.',
       inputSchema: {
@@ -455,6 +476,31 @@ export async function callMcpTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolContent> {
+  // Pre-switch arg-shape guard for typed Track-2/3 tools (FR-14).
+  // The three Zod-validated tools (mot_create_ticket, mot_update_ticket, write_memory)
+  // validate inside their own cases and are deliberately absent from this table.
+  const ARG_SPECS: Record<string, { name: string; type: 'string' | 'integer' }[]> = {
+    topic_thread_create:     [{ name: 'slug', type: 'string' }, { name: 'title', type: 'string' }],
+    topic_thread_link:       [{ name: 'slug', type: 'string' }, { name: 'session_id', type: 'string' }],
+    entity_get:              [{ name: 'id', type: 'string' }],
+    entity_search:           [{ name: 'q', type: 'string' }],
+    entity_related:          [{ name: 'id', type: 'string' }],
+    procedural_note_confirm: [{ name: 'id', type: 'integer' }],
+    entity_confirm:          [{ name: 'id', type: 'string' }],
+    entity_supersede:        [{ name: 'id', type: 'string' }, { name: 'superseded_by_id', type: 'string' }],
+  };
+  const specs = ARG_SPECS[name];
+  if (specs) {
+    for (const spec of specs) {
+      const v = args[spec.name];
+      const ok =
+        spec.type === 'string'
+          ? typeof v === 'string' && v !== ''
+          : typeof v === 'number' && Number.isInteger(v);  // 'integer' check (EC-8)
+      if (!ok) return text({ error: 'invalid_arg', arg: spec.name });
+    }
+  }
+
   switch (name) {
     case 'mot_list_tickets': {
       const opts: ListOpts = { includePrivate: true };
@@ -583,6 +629,33 @@ export async function callMcpTool(
         typeof args.rel === 'string' ? args.rel : undefined,
         typeof args.hops === 'number' ? args.hops : 1,
       ));
+
+    case 'entity_confirm': {
+      // AC-12: pre-checks via getEntity (includes superseded records) mirror confirmNote's
+      // not_found / already_confirmed pattern. A superseded entity is not confirmable in place
+      // (EC-1) — return not_found, not a distinct error, by design. Never throws.
+      const id = args.id as string;
+      const existing = getEntity(id);
+      if (existing === null) return text({ error: 'not_found' });
+      if (existing.record.superseded_by !== null) return text({ error: 'not_found' });
+      if (existing.record.confirmed === true) return text({ error: 'already_confirmed' });
+      appendEntityConfirm(id);
+      const updated = getEntity(id);
+      return text(updated?.record ?? { error: 'not_found' });
+    }
+
+    case 'entity_supersede': {
+      // AC-12: raw patch appender, not a chain resolver — if the target is itself superseded,
+      // proceed anyway (EC-2). OQ-4 (decided NO auto-confirm): do NOT confirm superseded_by_id.
+      // Never throws.
+      const id = args.id as string;
+      const supersededById = args.superseded_by_id as string;
+      if (id === supersededById) return text({ error: 'self_supersede' });
+      if (getEntity(id) === null) return text({ error: 'not_found', id });
+      if (getEntity(supersededById) === null) return text({ error: 'target_not_found', superseded_by_id: supersededById });
+      appendSupersede(id, supersededById);
+      return text({ ok: true, id, superseded_by_id: supersededById });
+    }
 
     case 'procedural_notes_list':
       return text(listNotes(

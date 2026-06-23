@@ -37,7 +37,7 @@ await bootstrapApiKey();
 const { upsertDigest, getDigests, structuralDigest } = await import('../../lib/digest');
 const { writeMemory, getActiveMemory } = await import('../../lib/memory');
 const { logTurn, getTurnsForSession } = await import('../../lib/conversation');
-const { listMcpTools } = await import('../../lib/mcp-tools');
+const { listMcpTools, callMcpTool } = await import('../../lib/mcp-tools');
 
 // Route modules.
 const digestRoute  = await import('../../app/api/conversation/digest/route');
@@ -597,6 +597,8 @@ const EXPECTED_MCP_TOOLS = [
   'mcp__mot__entity_get',
   'mcp__mot__entity_search',
   'mcp__mot__entity_related',
+  'mcp__mot__entity_confirm',
+  'mcp__mot__entity_supersede',
   'mcp__mot__procedural_notes_list',
   'mcp__mot__procedural_note_confirm',
 ];
@@ -607,6 +609,31 @@ describe('allowlist sync guard (EC-10)', () => {
     for (const expected of EXPECTED_MCP_TOOLS) {
       expect(registered).toContain(expected);
     }
+  });
+});
+
+// ── Pre-switch arg-shape guard (FR-14, EC-8) ──────────────────────────────────
+// callMcpTool validates typed Track-2/3 args before the switch; a bad shape returns a
+// structured { error: 'invalid_arg', arg } result instead of letting an `as` cast pass a
+// wrong-typed value into the lib function. The result is text() of the error object, so we
+// parse the JSON out of the ToolContent.
+
+async function callError(name: string, args: Record<string, unknown>) {
+  const out = await callMcpTool(name, args);
+  return JSON.parse(out[0].text) as { error: string; arg?: string };
+}
+
+describe('arg-shape guard (FR-14, EC-8)', () => {
+  it('AC-10a: entity_search with empty string q → invalid_arg/q', async () => {
+    expect(await callError('entity_search', { q: '' })).toEqual({ error: 'invalid_arg', arg: 'q' });
+  });
+
+  it('AC-10b: procedural_note_confirm with non-integer id → invalid_arg/id (EC-8)', async () => {
+    expect(await callError('procedural_note_confirm', { id: 'not-an-int' })).toEqual({ error: 'invalid_arg', arg: 'id' });
+  });
+
+  it('AC-10c: topic_thread_create missing title → invalid_arg/title', async () => {
+    expect(await callError('topic_thread_create', { slug: 'ok' })).toEqual({ error: 'invalid_arg', arg: 'title' });
   });
 });
 
