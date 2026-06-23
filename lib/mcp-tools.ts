@@ -8,8 +8,10 @@ import { listThreads, getThread, createThread, linkThreadSession } from './topic
 import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
 import { memoryContext } from './memory-context';
+import { compactGraph } from './graph-compact';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
+import path from 'node:path';
 
 // ── MCP tool definitions + dispatch (Streamable HTTP transport, 2024-11-05) ───
 
@@ -455,6 +457,14 @@ export function listMcpTools(): ToolDef[] {
         },
       },
     },
+    {
+      name: 'graph_compact',
+      description:
+        'Admin tool: compact graph.jsonl by folding all patches and dropping superseded/pruned ' +
+        'entities. Atomically replaces the live file. Only needed when the file is large; the ' +
+        'nightly job handles routine compaction automatically.',
+      inputSchema: { type: 'object', properties: {} },
+    },
   ];
 }
 
@@ -737,6 +747,14 @@ export async function callMcpTool(
         typeof args.chat_id === 'string' ? args.chat_id : undefined,
         typeof args.limit === 'number' ? args.limit : undefined,
       ));
+
+    case 'graph_compact': {
+      const graphPath =
+        process.env.MOT_GRAPH_PATH ??
+        path.join(process.cwd(), 'ontology', 'graph.jsonl');
+      await compactGraph(graphPath);
+      return text({ ok: true, message: 'Graph compacted successfully.' });
+    }
 
     default:
       throw new Error(`Unknown tool: ${name}`);
