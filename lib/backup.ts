@@ -2,6 +2,8 @@ import { schedule } from 'node-cron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getDb } from '../db/client';
+import { prunePendingProcedural } from './procedural';
+import { prunePendingEntities, compactGraph } from './graph-compact';
 
 // ── Nightly backup (FR-DB-2, Assumption A8) ───────────────────────────────────
 // One job: a WAL-safe point-in-time snapshot of the SQLite DB every night at 02:00.
@@ -47,7 +49,7 @@ export function backupGraph(backupDir: string): void {
 // A failed backup is logged, not thrown — a backup error must never take the server down.
 export function scheduleNightly(): void {
   const backupDir = process.env.BACKUP_PATH ?? './backups';
-  schedule('0 2 * * *', () => {
+  schedule('0 2 * * *', async () => {
     try {
       vacuumInto(backupDir);
       // RETENTION SWEEP SLOT — reserved for Phase 4 (config/retention_policy.ts drives it).
@@ -63,6 +65,54 @@ export function scheduleNightly(): void {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT] Graph backup failed:', e);
+    }
+
+    // ── Nightly Recallatron maintenance (Track 4, FR-3.18) ──────────────────────
+    // Three steps, each in its OWN try/catch so one failure can't abort the others (AC-9).
+    // Order is FIXED: (a) procedural prune → (b) entity prune → (c) compact. Compact MUST run
+    // last so freshly-pruned entity records are excluded from the compacted snapshot.
+
+    // (a) Prune stale unconfirmed procedural candidates.
+    try {
+      const deleted = prunePendingProcedural();
+      // eslint-disable-next-line no-console
+      console.log(`[MOT/nightly] procedural prune: ${deleted} stale candidate(s) deleted`);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT/nightly] procedural prune failed:', e);
+    }
+
+    // (b) Prune stale unconfirmed entity candidates (logs its own [MOT/nightly] count line).
+    try {
+      prunePendingEntities();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT/nightly] entity prune failed:', e);
+    }
+
+    // (c) Compact graph.jsonl, but only when it has grown past the 5 MB threshold — compaction
+    // rewrites the whole file, so it isn't worth doing on a small graph. Runs AFTER (b) so the
+    // just-pruned records are absent from the snapshot (FR-3.18).
+    try {
+      const graphSrc =
+        process.env.MOT_GRAPH_PATH ??
+        path.join(process.cwd(), 'ontology', 'graph.jsonl');
+      const FIVE_MB_LOCAL = 5 * 1024 * 1024; // mirrors FIVE_MB in graph.ts
+      let fileSize = 0;
+      if (fs.existsSync(graphSrc)) {
+        fileSize = fs.statSync(graphSrc).size;
+      }
+      if (fileSize >= FIVE_MB_LOCAL) {
+        await compactGraph(graphSrc);
+        // eslint-disable-next-line no-console
+        console.log('[MOT/nightly] graph compact: completed');
+      } else {
+        // eslint-disable-next-line no-console
+        console.log('[MOT/nightly] graph compact: skipped (under 5MB threshold)');
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT/nightly] graph compact failed:', e);
     }
   });
   // eslint-disable-next-line no-console
