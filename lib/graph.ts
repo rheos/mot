@@ -19,6 +19,7 @@ export interface EntityRecord {
   label: string;
   properties: {
     relations?: { rel: string; target_id: string }[];
+    probable_duplicate_of?: string[];
     [k: string]: unknown;
   };
   valid_from: string; // ISO datetime
@@ -34,6 +35,12 @@ export interface SupersessionPatch {
   old: string;
   new: string;
   ts: string;
+}
+
+export interface ConfirmPatch {
+  op: 'confirm';
+  id: string;   // entity id being confirmed in place — id does NOT change (FR-1)
+  ts: string;   // nowIso()
 }
 
 // Server-only live data path. Read lazily (not at module load) so tests can point
@@ -74,12 +81,31 @@ export function appendSupersede(oldId: string, newId: string): void {
   fs.appendFileSync(file, JSON.stringify(patch) + '\n');
 }
 
-// A parsed line is either an entity record or a supersession patch.
+/**
+ * Append a confirmation patch marking `id` as confirmed in place. The entity's id does not
+ * change. Same single-syscall append pattern as appendEntity / appendSupersede.
+ */
+export function appendEntityConfirm(id: string): void {
+  const patch: ConfirmPatch = { op: 'confirm', id, ts: nowIso() };
+  const file = graphPath();
+  ensureDir(file);
+  fs.appendFileSync(file, JSON.stringify(patch) + '\n');
+}
+
+// A parsed line is an entity record, a supersession patch, or a confirmation patch.
 function isSupersedePatch(rec: unknown): rec is SupersessionPatch {
   return (
     typeof rec === 'object' &&
     rec !== null &&
     (rec as { op?: unknown }).op === 'supersede'
+  );
+}
+
+function isConfirmPatch(rec: unknown): rec is ConfirmPatch {
+  return (
+    typeof rec === 'object' &&
+    rec !== null &&
+    (rec as { op?: unknown }).op === 'confirm'
   );
 }
 
@@ -101,6 +127,7 @@ function loadGraph(): EntityRecord[] {
 
   const entities = new Map<string, EntityRecord>();
   const patches: SupersessionPatch[] = [];
+  const confirmPatches: ConfirmPatch[] = [];
 
   const lines = raw.split('\n');
   let offset = 0; // byte offset of the current line's start, for the skip log
@@ -119,6 +146,8 @@ function loadGraph(): EntityRecord[] {
 
     if (isSupersedePatch(parsed)) {
       patches.push(parsed);
+    } else if (isConfirmPatch(parsed)) {
+      confirmPatches.push(parsed);
     } else {
       const rec = parsed as EntityRecord;
       entities.set(rec.id, rec);
@@ -130,6 +159,12 @@ function loadGraph(): EntityRecord[] {
   for (const patch of patches) {
     const target = entities.get(patch.old);
     if (target) target.superseded_by = patch.new;
+  }
+
+  // Apply confirmation patches.
+  for (const cp of confirmPatches) {
+    const target = entities.get(cp.id);
+    if (target) target.confirmed = true;
   }
 
   return [...entities.values()];

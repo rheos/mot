@@ -23,8 +23,14 @@ afterEach(() => {
 });
 
 // Lazily resolved at call time (env is set in beforeEach above).
-const { appendEntity, appendSupersede, getEntity, searchEntities, relatedEntities } =
-  await import('../../lib/graph');
+const {
+  appendEntity,
+  appendSupersede,
+  appendEntityConfirm,
+  getEntity,
+  searchEntities,
+  relatedEntities,
+} = await import('../../lib/graph');
 
 // A minimal valid entity record (everything but the generated id), overridable per test.
 function entityInput(
@@ -83,6 +89,61 @@ describe('Recallatron Phase 2 — entity graph (lib/graph)', () => {
     const got = getEntity(a.id);
     expect(got).not.toBeNull();
     expect(got!.record.superseded_by).toBe(b.id);
+  });
+
+  it('confirm fold: false → true; an unpatched false entity stays false (FR-1)', () => {
+    // Seed both entities explicitly confirmed:false so a true result is the fold, not the seed.
+    const confirmed = appendEntity(entityInput({ label: 'to confirm', confirmed: false }));
+    const untouched = appendEntity(entityInput({ label: 'left alone', confirmed: false }));
+
+    appendEntityConfirm(confirmed.id);
+
+    const got = getEntity(confirmed.id);
+    expect(got).not.toBeNull();
+    expect(got!.record.confirmed).toBe(true);
+
+    // The entity that received no confirm patch must still read back false — proves the fold
+    // (not the seed) is what flipped the first one.
+    const other = getEntity(untouched.id);
+    expect(other!.record.confirmed).toBe(false);
+  });
+
+  it('appendEntityConfirm round-trip: writes a {op:confirm,id,ts} line; entity reads confirmed', () => {
+    const e = appendEntity(entityInput({ label: 'pending', confirmed: false }));
+    appendEntityConfirm(e.id);
+
+    // Parse the last JSONL line directly from the temp file.
+    const lines = fs.readFileSync(graphFile, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last.op).toBe('confirm');
+    expect(last.id).toBe(e.id);
+    expect(typeof last.ts).toBe('string');
+
+    // And the entity reloaded through the public reader reflects the confirmation.
+    const got = getEntity(e.id);
+    expect(got!.record.confirmed).toBe(true);
+  });
+
+  it('confirm-patch branch does not swallow plain entity lines (regression guard)', () => {
+    // Write a plain entity record (no `op` field) directly to the temp file. The new confirm
+    // discrimination branch must still load it as an entity, not skip or mis-route it.
+    const rec = {
+      id: 'manual-entity-1',
+      type: 'Fact',
+      label: 'hand-written entity',
+      properties: {},
+      valid_from: '2026-06-22T00:00:00.000Z',
+      valid_until: null,
+      confidence: 0.9,
+      source: 'manual',
+      superseded_by: null,
+      confirmed: true,
+    };
+    fs.appendFileSync(graphFile, JSON.stringify(rec) + '\n');
+
+    // searchEntities drives loadGraph; the entity must come back.
+    const ids = searchEntities('').map((e) => e.id);
+    expect(ids).toContain('manual-entity-1');
   });
 
   it('malformed line is skipped, not thrown (EC-1, AC-13)', () => {
