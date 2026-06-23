@@ -121,3 +121,26 @@ export function confirmNote(
     .prepare(`SELECT * FROM procedural_notes WHERE id = ?`)
     .get(id) as ProceduralNote;
 }
+
+// Nightly maintenance: delete stale unconfirmed candidates older than maxAgeDays. Only the
+// unconfirmed never-superseded chaff is dropped; confirmed notes and fresh candidates survive.
+// Returns the number of rows deleted (result.changes). confirmed = 0 is the raw-SQLite integer
+// comparison (better-sqlite3), not a boolean.
+//
+// The `mention_count <= 1` clause is currently always true — every candidate is inserted with
+// mention_count = 1 (insertCandidate above) and nothing ever bumps it (OQ-5 dedup-bump deferred).
+// It is kept as a forward-guard: if a future dedup pass starts bumping mention_count, a note that
+// has resurfaced more than once should NOT be silently pruned just for being unconfirmed.
+export function prunePendingProcedural(maxAgeDays = 30): number {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const result = db
+    .prepare(
+      `DELETE FROM procedural_notes
+        WHERE confirmed = 0 AND mention_count <= 1 AND created_at < :cutoff`,
+    )
+    .run({ cutoff });
+
+  return result.changes;
+}

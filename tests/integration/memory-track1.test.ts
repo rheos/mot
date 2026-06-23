@@ -601,6 +601,10 @@ const EXPECTED_MCP_TOOLS = [
   'mcp__mot__entity_supersede',
   'mcp__mot__procedural_notes_list',
   'mcp__mot__procedural_note_confirm',
+  // Track-4 tools
+  'mcp__mot__memory_context',
+  'mcp__mot__graph_compact',
+  'mcp__mot__topic_thread_summarize',
 ];
 
 describe('allowlist sync guard (EC-10)', () => {

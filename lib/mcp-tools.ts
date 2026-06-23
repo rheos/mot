@@ -4,11 +4,14 @@ import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './vali
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory } from './memory';
-import { listThreads, getThread, createThread, linkThreadSession } from './topics';
+import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
 import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
+import { memoryContext } from './memory-context';
+import { compactGraph } from './graph-compact';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
+import path from 'node:path';
 
 // ── MCP tool definitions + dispatch (Streamable HTTP transport, 2024-11-05) ───
 
@@ -439,6 +442,44 @@ export function listMcpTools(): ToolDef[] {
         required: ['text'],
       },
     },
+    {
+      name: 'memory_context',
+      description:
+        'One-call session boot bundle. Returns the four Recallatron stores: recent topics, ' +
+        'active entities, confirmed procedural notes, and recent memory items. When q is ' +
+        'provided, each section is relevance-filtered. When absent, returns recency-ordered items.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          q: { type: 'string', description: 'Optional keyword filter applied to all four sections.' },
+          chat_id: { type: 'string', description: 'Scope recent_memory to this chat.' },
+          limit: { type: 'integer', description: 'Override per-section default limits uniformly.' },
+        },
+      },
+    },
+    {
+      name: 'graph_compact',
+      description:
+        'Admin tool: compact graph.jsonl by folding all patches and dropping superseded/pruned ' +
+        'entities. Atomically replaces the live file. Only needed when the file is large; the ' +
+        'nightly job handles routine compaction automatically.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'topic_thread_summarize',
+      description:
+        'Fetch and budget a topic thread for cross-session synthesis. Returns the thread\'s ' +
+        'linked sessions (most recent N, truncated to 50 sessions or ~40k chars of combined ' +
+        'summaries). Rheo synthesizes the returned sessions — mot is model-free. Returns ' +
+        '{ error: "thread_not_found" } when the slug is unknown.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          slug: { type: 'string', description: 'The topic thread slug.' },
+        },
+        required: ['slug'],
+      },
+    },
   ];
 }
 
@@ -482,6 +523,7 @@ export async function callMcpTool(
   const ARG_SPECS: Record<string, { name: string; type: 'string' | 'integer' }[]> = {
     topic_thread_create:     [{ name: 'slug', type: 'string' }, { name: 'title', type: 'string' }],
     topic_thread_link:       [{ name: 'slug', type: 'string' }, { name: 'session_id', type: 'string' }],
+    topic_thread_summarize:  [{ name: 'slug', type: 'string' }],
     entity_get:              [{ name: 'id', type: 'string' }],
     entity_search:           [{ name: 'q', type: 'string' }],
     entity_related:          [{ name: 'id', type: 'string' }],
@@ -714,6 +756,24 @@ export async function callMcpTool(
       throw new Error(`notify_robin: delivery failed after 3 attempts (${lastReason})`);
     }
 
+    // ── Track-4 tools ─────────────────────────────────────────────────────────
+    case 'memory_context':
+      return text(await memoryContext(
+        typeof args.q === 'string' ? args.q : undefined,
+        typeof args.chat_id === 'string' ? args.chat_id : undefined,
+        typeof args.limit === 'number' ? args.limit : undefined,
+      ));
+
+    case 'graph_compact': {
+      const graphPath =
+        process.env.MOT_GRAPH_PATH ??
+        path.join(process.cwd(), 'ontology', 'graph.jsonl');
+      await compactGraph(graphPath);
+      return text({ ok: true, message: 'Graph compacted successfully.' });
+    }
+
+    case 'topic_thread_summarize':
+      return text(summarizeThread(args.slug as string));
 
     default:
       throw new Error(`Unknown tool: ${name}`);

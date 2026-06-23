@@ -137,3 +137,59 @@ export function getThread(
 
   return { ...thread, sessions };
 }
+
+// ── summarizeThread (Track 4, Phase 5 — FR-2.13, EC-1, AC-4/AC-5) ──────────────
+// Fetch a thread and budget its linked sessions for cross-session synthesis. mot stays
+// MODEL-FREE (OQ-1 = (b)): this returns the STRUCTURED most-recent sessions, never synthesized
+// prose — Rheo does the synthesis from the array. The session list arrives ts DESC from
+// getThread, so "keep the most recent N" is just a prefix walk. Never throws: an unknown slug
+// returns getThread's typed { error: 'thread_not_found' } verbatim (AC-4).
+export type SummarizeResult =
+  | {
+      slug: string;
+      title: string;
+      session_count: number;
+      truncated: boolean;
+      truncation_note?: string;
+      sessions: { session_id: string; summary: string; ts: string }[];
+    }
+  | { error: 'thread_not_found'; slug: string };
+
+// Truncation budget (FR-2.13, EC-1): keep the most-recent sessions until EITHER the 50-session
+// cap OR the ~40k combined-summary-chars cap is reached, whichever comes first.
+const MAX_SESSIONS = 50;
+const MAX_SUMMARY_CHARS = 40_000;
+
+export function summarizeThread(slug: string): SummarizeResult {
+  const result = getThread(slug);
+  if ('error' in result) {
+    // getThread already returns { error: 'thread_not_found', slug }; pass it through (AC-4).
+    return result;
+  }
+
+  // Walk the ts-DESC session list, accumulating chars, stopping at either cap.
+  const kept: { session_id: string; summary: string; ts: string }[] = [];
+  let charCount = 0;
+  for (const session of result.sessions) {
+    if (kept.length >= MAX_SESSIONS) break;
+    if (charCount + session.summary.length > MAX_SUMMARY_CHARS) break;
+    kept.push(session);
+    charCount += session.summary.length;
+  }
+
+  const originalCount = result.sessions.length; // session_count is the ORIGINAL count.
+  const truncated = kept.length < originalCount;
+
+  return {
+    slug: result.slug,
+    title: result.title,
+    session_count: originalCount,
+    truncated,
+    ...(truncated
+      ? {
+          truncation_note: `truncated: showing most recent ${kept.length} of ${originalCount} sessions`,
+        }
+      : {}),
+    sessions: kept,
+  };
+}
