@@ -21,6 +21,7 @@ process.env.MOT_GRAPH_PATH = graphFile;
 const { migrate_db, getDb } = await import('../../db/client');
 const { runExtraction, TEST_DIGEST_FIXTURE } = await import('../../lib/extraction');
 const { searchEntities } = await import('../../lib/graph');
+const { levenshtein } = await import('../../lib/levenshtein');
 
 const SESSION_ID = 's-extract';
 const CHAT_ID = 'c1';
@@ -168,5 +169,143 @@ describe('Recallatron Phase 4 — extraction pass (lib/extraction)', () => {
       getDb().prepare(`SELECT count(*) AS c FROM procedural_notes`).get() as { c: number }
     ).c;
     expect(notesAfter).toBe(notesBefore + 1);
+  });
+});
+
+// The dedup signal (Track 3 Phase 3) — processEntities flags probable_duplicate_of on the
+// incoming entity when a same-type active entity is a near-match (edit distance ≤ 2 OR a
+// prefix/suffix with both labels ≥ 4 chars). The entity is ALWAYS appended; the flag is advisory
+// (FR-5, no suppression). Same-batch asymmetry is intentional: appendEntity writes immediately,
+// so the next item's scan re-reads the file and sees the just-appended entity.
+describe('Recallatron Track 3 Phase 3 — semantic dedup signal at extraction', () => {
+  // These cases want a clean graph per test. Point MOT_GRAPH_PATH at a dedicated dir for this
+  // block (graphPath() reads the env lazily on every call) so they don't share — or race the
+  // teardown of — the first describe's temp file. Restore the env afterwards.
+  let dedupDir: string;
+  let dedupGraph: string;
+  const prevGraphPath = process.env.MOT_GRAPH_PATH;
+
+  beforeAll(() => {
+    dedupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-dedup-'));
+    dedupGraph = path.join(dedupDir, 'graph.jsonl');
+    process.env.MOT_GRAPH_PATH = dedupGraph;
+  });
+
+  afterAll(() => {
+    fs.rmSync(dedupDir, { recursive: true, force: true });
+    if (prevGraphPath === undefined) delete process.env.MOT_GRAPH_PATH;
+    else process.env.MOT_GRAPH_PATH = prevGraphPath;
+  });
+
+  // Truncate (recreating the dir defensively) before each case for a deterministic scan.
+  function resetGraph(): void {
+    fs.mkdirSync(path.dirname(dedupGraph), { recursive: true });
+    fs.writeFileSync(dedupGraph, '');
+  }
+
+  // Drive a single-item extraction batch of one entity (Person by default), returning the
+  // entity record now in the graph. Confidence 0.9 clears the EC-5 gate.
+  async function extractOne(
+    label: string,
+    type: 'Person' | 'Project' | 'Deadline' | 'Preference' | 'Fact' = 'Person',
+  ): Promise<void> {
+    await runExtraction(
+      digestRow({
+        entity_draft: JSON.stringify([{ type, label, properties: {}, confidence: 0.9 }]),
+        procedural_raw: null,
+      }),
+    );
+  }
+
+  it('AC-6: flags probable_duplicate_of when a same-type label is within edit distance ≤ 2', async () => {
+    resetGraph();
+
+    await extractOne('Alice');
+    const first = searchEntities('', 'Person');
+    expect(first).toHaveLength(1);
+    const firstId = first[0].id;
+
+    // "Alica" vs "Alice" — edit distance 1, ≤ 2 gate fires.
+    await extractOne('Alica');
+
+    const all = searchEntities('', 'Person');
+    expect(all).toHaveLength(2);
+
+    const second = all.find((e) => e.label === 'Alica')!;
+    expect(second.properties.probable_duplicate_of).toContain(firstId);
+
+    // The first entity is unchanged — no flag back-written onto it (the scan only flags the incoming).
+    const firstAfter = all.find((e) => e.id === firstId)!;
+    expect(firstAfter.properties.probable_duplicate_of).toBeUndefined();
+  });
+
+  it('AC-7: prefix/suffix gate fires past the distance gate when both labels are ≥ 4 chars', async () => {
+    resetGraph();
+
+    await extractOne('Alex');
+    const first = searchEntities('', 'Person');
+    expect(first).toHaveLength(1);
+    const firstId = first[0].id;
+
+    // "Alex Goodwin" starts with "Alex" (len 6, ≥ 4). Edit distance is 8 (> 2), so the
+    // prefix gate — not the distance gate — is what catches this.
+    await extractOne('Alex Goodwin');
+
+    const second = searchEntities('', 'Person').find((e) => e.label === 'Alex Goodwin')!;
+    expect(second.properties.probable_duplicate_of).toContain(firstId);
+  });
+
+  it('AC-7: the ≥ 4-char length floor blocks the prefix/suffix gate for short labels', async () => {
+    resetGraph();
+
+    // "Al" (len 2, < 4) vs "Alice" — edit distance 3 (> 2). "Alice" starts with "Al", but the
+    // shorter label is below the 4-char floor, so the prefix gate is blocked → no flag.
+    await extractOne('Al');
+    await extractOne('Alice');
+
+    const second = searchEntities('', 'Person').find((e) => e.label === 'Alice')!;
+    expect(second.properties.probable_duplicate_of).toBeUndefined();
+  });
+
+  it('AC-8: no same-type near-match → no probable_duplicate_of key at all', async () => {
+    resetGraph();
+
+    // A lone entity with nothing similar in the graph. The dedup scan finds no match and must
+    // not add the key (not even an empty array).
+    await extractOne('Zephyrine');
+
+    const only = searchEntities('', 'Person');
+    expect(only).toHaveLength(1);
+    expect('probable_duplicate_of' in only[0].properties).toBe(false);
+  });
+
+  it('only flags SAME-type entities — a different-type near-match is ignored', async () => {
+    resetGraph();
+
+    // "Alice" the Person and "Alica" the Project are within edit distance 1, but the dedup scan
+    // is scoped to item.type, so the Project does not pick up the Person as a duplicate.
+    await extractOne('Alice', 'Person');
+    await extractOne('Alica', 'Project');
+
+    const project = searchEntities('', 'Project').find((e) => e.label === 'Alica')!;
+    expect(project.properties.probable_duplicate_of).toBeUndefined();
+  });
+});
+
+describe('levenshtein edit distance (lib/levenshtein)', () => {
+  it('identical strings → 0', () => {
+    expect(levenshtein('alice', 'alice')).toBe(0);
+  });
+
+  it('single substitution → 1', () => {
+    expect(levenshtein('cat', 'bat')).toBe(1);
+  });
+
+  it('"Alica" vs "Alice" → 1 (the ≤ 2 gate fires)', () => {
+    expect(levenshtein('alica', 'alice')).toBe(1);
+  });
+
+  it('"Alex" vs "Alex Goodwin" → 8 (caught by prefix, not distance)', () => {
+    expect(levenshtein('alex', 'alex goodwin')).toBe(8);
   });
 });

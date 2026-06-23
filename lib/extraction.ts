@@ -10,8 +10,9 @@
 // Architecture §OQ-2: this is the digest trigger point — the extraction fires from the digest
 // route handler, in TypeScript, not in the (separate) Python bot codebase.
 
-import { appendEntity } from './graph';
+import { appendEntity, searchEntities } from './graph';
 import { insertCandidate } from './procedural';
+import { levenshtein } from './levenshtein';
 import { nowIso } from './time';
 import type { DigestRow } from './digest';
 
@@ -111,6 +112,37 @@ function processEntities(digestRow: DigestRow): void {
       );
       continue;
     }
+
+    // Dedup scan: find same-type active entities that are likely duplicates of this label.
+    // searchEntities('', type) with an empty q matches all active entities of that type
+    // (empty needle → haystack.includes('') is always true; active-only is the default branch
+    // at graph.ts:200). This usage is deliberate — OQ-2 confirmed.
+    const sameType = searchEntities('', item.type);
+    if (sameType.length >= 1000) {
+      console.warn(
+        `[MOT/extraction] dedup scan large: ${sameType.length} active "${item.type}" entities — proceeding`,
+      );
+    }
+    const dupIds: string[] = [];
+    const incomingLower = item.label.toLowerCase();
+    for (const existing of sameType) {
+      const existingLower = existing.label.toLowerCase();
+      const dist = levenshtein(incomingLower, existingLower);
+      const shorter = Math.min(incomingLower.length, existingLower.length);
+      const prefixOrSuffix =
+        shorter >= 4 &&
+        (incomingLower.startsWith(existingLower) ||
+          incomingLower.endsWith(existingLower) ||
+          existingLower.startsWith(incomingLower) ||
+          existingLower.endsWith(incomingLower));
+      if (dist <= 2 || prefixOrSuffix) {
+        dupIds.push(existing.id);
+      }
+    }
+    if (dupIds.length > 0) {
+      item.properties = { ...item.properties, probable_duplicate_of: dupIds };
+    }
+    // confirmed:false is intentional for dedup-flagged items — confirmation is a separate step.
 
     // AC-7 — extraction-pass entities are NEVER confirmed; confirmation is a separate step.
     appendEntity({
