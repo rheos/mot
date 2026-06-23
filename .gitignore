@@ -25,3 +25,5 @@ backups/
 
 # Packaged skill bundles (build artifacts)
 skills/*.zip
+.bureau/runs/
+.bureau/archive/
