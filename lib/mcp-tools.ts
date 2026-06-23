@@ -7,6 +7,7 @@ import { writeMemory, getActiveMemory, searchActiveMemory } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession } from './topics';
 import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
+import { memoryContext } from './memory-context';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
 
@@ -439,6 +440,21 @@ export function listMcpTools(): ToolDef[] {
         required: ['text'],
       },
     },
+    {
+      name: 'memory_context',
+      description:
+        'One-call session boot bundle. Returns the four Recallatron stores: recent topics, ' +
+        'active entities, confirmed procedural notes, and recent memory items. When q is ' +
+        'provided, each section is relevance-filtered. When absent, returns recency-ordered items.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          q: { type: 'string', description: 'Optional keyword filter applied to all four sections.' },
+          chat_id: { type: 'string', description: 'Scope recent_memory to this chat.' },
+          limit: { type: 'integer', description: 'Override per-section default limits uniformly.' },
+        },
+      },
+    },
   ];
 }
 
@@ -714,6 +730,13 @@ export async function callMcpTool(
       throw new Error(`notify_robin: delivery failed after 3 attempts (${lastReason})`);
     }
 
+    // ── Track-4 tools ─────────────────────────────────────────────────────────
+    case 'memory_context':
+      return text(await memoryContext(
+        typeof args.q === 'string' ? args.q : undefined,
+        typeof args.chat_id === 'string' ? args.chat_id : undefined,
+        typeof args.limit === 'number' ? args.limit : undefined,
+      ));
 
     default:
       throw new Error(`Unknown tool: ${name}`);
