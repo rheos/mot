@@ -1,5 +1,6 @@
 import { listThreads, type TopicThreadWithCount } from '../../../lib/topics';
 import { TopicBrowser } from '../../../components/memory/TopicBrowser';
+import { MemoryNav } from '../../../components/memory/MemoryNav';
 
 // Recallatron topic browser (Track 4, Phase 5 — FR-6). Server Component: it reads the topic
 // threads IN-PROCESS via listThreads (no fetch — Server Components read the data layer directly,
@@ -26,7 +27,8 @@ export default function TopicsPage(): React.JSX.Element {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-4">
+    <main className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-4">
+      <MemoryNav />
       <TopicBrowser initialData={{ threads, error }} />
     </main>
   );

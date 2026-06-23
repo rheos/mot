@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Suspense } from 'react';
-import { Briefcase, Plus, Scale, Search, User } from 'lucide-react';
+import { Brain, Briefcase, Plus, Scale, Search, User } from 'lucide-react';
 import { relativeTime } from '../lib/time';
 import { SearchBox } from './SearchBox';
 import { ThemeToggle } from './ThemeToggle';
@@ -84,6 +84,17 @@ export function TopNav({ lastRun }: { lastRun: string | null }): React.JSX.Eleme
             <Briefcase aria-hidden="true" className="h-4 w-4" strokeWidth={1.9} />
             <span className="hidden lg:inline">Ministry of Labour</span>
           </a>
+          {/* Recallatron — the memory surface (entities / topics / procedural notes). A next/link
+              <Link> on purpose: /memory lives INSIDE this app's basePath, so the router correctly
+              prefixes it under the proxy (unlike /labour, a sibling app, which must stay a raw <a>). */}
+          <Link
+            href="/memory/entities"
+            title="Recallatron"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-ministry-sm border border-border bg-surface-2 px-3 text-sm font-semibold text-ink-2 transition hover:border-gold-line hover:text-gold-bright focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
+          >
+            <Brain aria-hidden="true" className="h-4 w-4" strokeWidth={1.9} />
+            <span className="hidden lg:inline">Recallatron</span>
+          </Link>
           <ThemeToggle />
           <Link
             href="/account"

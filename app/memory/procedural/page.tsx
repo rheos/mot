@@ -1,5 +1,6 @@
 import { listNotes, type ProceduralNote } from '../../../lib/procedural';
 import { ProceduralBrowser } from '../../../components/memory/ProceduralBrowser';
+import { MemoryNav } from '../../../components/memory/MemoryNav';
 
 // Recallatron procedural-note browser (Track 4, Phase 4 — FR-6). Server Component: it reads the
 // procedural store IN-PROCESS via listNotes (no fetch — Server Components read the data layer
@@ -33,7 +34,8 @@ export default function ProceduralPage(): React.JSX.Element {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-4">
+    <main className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-4">
+      <MemoryNav />
       <ProceduralBrowser initialData={{ confirmed, pending, error }} />
     </main>
   );

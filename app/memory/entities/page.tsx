@@ -1,5 +1,6 @@
 import { searchEntities, type EntityRecord } from '../../../lib/graph';
 import { EntityBrowser } from '../../../components/memory/EntityBrowser';
+import { MemoryNav } from '../../../components/memory/MemoryNav';
 
 // Recallatron entity browser (Track 4, Phase 4 — FR-6). Server Component: it reads the entity
 // graph IN-PROCESS via searchEntities (no fetch — this is what Server Components are for, and
@@ -29,7 +30,8 @@ export default function EntitiesPage(): React.JSX.Element {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-4">
+    <main className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-4">
+      <MemoryNav />
       <EntityBrowser initialData={{ active, unconfirmed, error }} />
     </main>
   );
