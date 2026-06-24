@@ -89,11 +89,11 @@ export function TopNav({ lastRun }: { lastRun: string | null }): React.JSX.Eleme
               prefixes it under the proxy (unlike /labour, a sibling app, which must stay a raw <a>). */}
           <Link
             href="/memory/entities"
-            title="Memory"
+            title="Recallatron"
             className="inline-flex h-9 items-center justify-center gap-2 rounded-ministry-sm border border-border bg-surface-2 px-3 text-sm font-semibold text-ink-2 transition hover:border-gold-line hover:text-gold-bright focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
           >
             <Brain aria-hidden="true" className="h-4 w-4" strokeWidth={1.9} />
-            <span>Memory</span>
+            <span>Recallatron</span>
           </Link>
           <ThemeToggle />
           <Link
