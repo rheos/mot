@@ -26,8 +26,10 @@ import { CopyButton } from './CopyButton';
 import type { Ministry, Severity } from '../lib/enums';
 import { apiPath } from '../lib/client/base-path';
 
-const TRAY_WIDTH = 234; // 3 x 78px mobile actions
-const DONE_THRESHOLD = TRAY_WIDTH + 30;
+const LEFT_TRAY_W = 78;              // Done only
+const LEFT_THRESHOLD = LEFT_TRAY_W + 44;   // auto-fires Done
+const RIGHT_TRAY_W = 156;            // Watch + Snooze
+const RIGHT_THRESHOLD = RIGHT_TRAY_W + 44; // auto-fires Watch
 
 const MinistryIcons: Record<string, LucideIcon> = {
   Hammer,
@@ -164,8 +166,8 @@ export function TriageRow({
     }
     if (Math.abs(dx) > 5) drag.current.moved = true;
     const next = Math.max(
-      -(DONE_THRESHOLD + 48),
-      Math.min(0, drag.current.baseX + dx),
+      -(LEFT_THRESHOLD + 48),
+      Math.min(RIGHT_THRESHOLD + 48, drag.current.baseX + dx),
     );
     drag.current.currentX = next;
     setDragX(next);
@@ -173,16 +175,23 @@ export function TriageRow({
 
   function onPointerUp(): void {
     if (!drag.current) return;
-    const current = drag.current.currentX;
+    const x = drag.current.currentX;
     moved.current = drag.current.moved;
     drag.current = null;
     setDragging(false);
-    if (current <= -DONE_THRESHOLD) {
+    if (x <= -LEFT_THRESHOLD) {
       setDragX(0);
       void triageAction({ status: 'done' });
       return;
     }
-    setDragX(current <= -TRAY_WIDTH / 2 ? -TRAY_WIDTH : 0);
+    if (x >= RIGHT_THRESHOLD) {
+      setDragX(0);
+      void triageAction({ status: 'watching' });
+      return;
+    }
+    if (x < -(LEFT_TRAY_W / 2)) { setDragX(-LEFT_TRAY_W); return; }
+    if (x > (RIGHT_TRAY_W / 2)) { setDragX(RIGHT_TRAY_W); return; }
+    setDragX(0);
   }
 
   function rowClick(): void {
@@ -190,7 +199,7 @@ export function TriageRow({
       moved.current = false;
       return;
     }
-    if (dragX < -8) {
+    if (Math.abs(dragX) > 8) {
       resetTray();
       return;
     }
@@ -198,7 +207,8 @@ export function TriageRow({
   }
 
   const rowTransform = dragX ? `translateX(${dragX}px)` : undefined;
-  const doneStretch = Math.max(0, Math.min(48, -dragX - TRAY_WIDTH));
+  const doneStretch = Math.max(0, Math.min(48, -dragX - LEFT_TRAY_W));
+  const watchStretch = Math.max(0, Math.min(48, dragX - RIGHT_TRAY_W));
   const rowWash =
     ticket.severity === 'critical'
       ? 'shadow-[inset_0_0_0_100vmax_rgba(224,71,92,.04)]'
@@ -208,24 +218,8 @@ export function TriageRow({
 
   return (
     <div className="relative overflow-hidden border-b border-hair bg-surface last:border-b-0">
+      {/* Right tray — swipe left → Done */}
       <div className="absolute inset-y-0 right-0 flex items-stretch sm:hidden">
-        <button
-          type="button"
-          disabled={disabled}
-          aria-label="Watch"
-          onClick={() => trayAction({ status: 'watching' })}
-          className="flex w-[78px] flex-col items-center justify-center gap-1 border-0 bg-[#3a5a72] text-[11px] font-bold tracking-[0.04em] text-white disabled:opacity-50"
-        >
-          <Eye aria-hidden="true" className="h-[19px] w-[19px]" strokeWidth={1.9} />
-          Watch
-        </button>
-        <SnoozePopover
-          disabled={disabled}
-          variant="tray"
-          onSnooze={(iso) =>
-            trayAction({ status: 'snoozed', snoozed_until: iso })
-          }
-        />
         <button
           type="button"
           disabled={disabled}
@@ -237,6 +231,28 @@ export function TriageRow({
           <Check aria-hidden="true" className="h-[19px] w-[19px]" strokeWidth={2} />
           Done
         </button>
+      </div>
+
+      {/* Left tray — swipe right → Watch / Snooze */}
+      <div className="absolute inset-y-0 left-0 flex items-stretch sm:hidden">
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label="Watch"
+          onClick={() => trayAction({ status: 'watching' })}
+          className="flex flex-col items-center justify-center gap-1 border-0 bg-[#3a5a72] text-[11px] font-bold tracking-[0.04em] text-white disabled:opacity-50"
+          style={{ width: 78 + watchStretch }}
+        >
+          <Eye aria-hidden="true" className="h-[19px] w-[19px]" strokeWidth={1.9} />
+          Watch
+        </button>
+        <SnoozePopover
+          disabled={disabled}
+          variant="tray"
+          onSnooze={(iso) =>
+            trayAction({ status: 'snoozed', snoozed_until: iso })
+          }
+        />
       </div>
 
       <div
