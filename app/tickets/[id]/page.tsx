@@ -2,6 +2,7 @@ import Link from 'next/link';
 import {
   ArrowLeft,
   Banknote,
+  ExternalLink,
   Globe,
   GraduationCap,
   Hammer,
@@ -178,9 +179,7 @@ export default function TicketDetailPage({
       </div>
 
       <DetailCard title="Details">
-        <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-2">
-          {ticket.body || '—'}
-        </p>
+        <TicketBody body={ticket.body} />
         {ticket.blocked_note && (
           <div className="mt-3 rounded-ministry-sm border border-amber-line bg-amber-tint px-3 py-2">
             <span className="text-xs font-bold text-amber">Blocked: </span>
@@ -279,6 +278,57 @@ export default function TicketDetailPage({
         <CommentBox ticketId={ticket.id} />
       </DetailCard>
     </main>
+  );
+}
+
+const URL_RE = /https?:\/\/\S+/g;
+
+function labelForUrl(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    if (host.includes('sentry.io')) return 'Sentry';
+    if (host.includes('github.com')) return 'GitHub';
+    if (host.includes('linear.app')) return 'Linear';
+    if (host.includes('stripe.com')) return 'Stripe';
+    if (host.includes('upwork.com')) return 'Upwork';
+    if (host.includes('notion.so')) return 'Notion';
+    return host;
+  } catch {
+    return 'Link';
+  }
+}
+
+function TicketBody({ body }: { body: string | null }): React.JSX.Element {
+  if (!body) {
+    return <p className="text-[15px] leading-relaxed text-ink-2">—</p>;
+  }
+
+  // Collect unique URLs, strip trailing punctuation that isn't part of the URL.
+  const urls = [...new Set([...body.matchAll(URL_RE)].map((m) => m[0].replace(/[.,;:!?)]+$/, '')))];
+  const prose = body.replace(URL_RE, '').replace(/ {2,}/g, ' ').trim();
+
+  return (
+    <div>
+      {urls.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {urls.map((url) => (
+            <a
+              key={url}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-ministry-xs border border-border bg-surface-2 px-[9px] py-[4px] text-[12px] font-medium text-gold-bright transition hover:border-gold-line hover:bg-gold-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
+            >
+              <ExternalLink aria-hidden="true" className="h-3 w-3 shrink-0" />
+              {labelForUrl(url)}
+            </a>
+          ))}
+        </div>
+      )}
+      <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-2">
+        {prose || '—'}
+      </p>
+    </div>
   );
 }
 
