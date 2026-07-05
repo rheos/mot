@@ -18,6 +18,9 @@ export function rrfMerge<T extends { id: string | number }>(
 
   for (const list of lists) {
     list.forEach((item, index) => {
+      // String(id) assumes all merged lists share ONE id-space (true for every current
+      // caller — each merge is within a single store); merging two id-spaces where
+      // numeric 42 and "42" collide would need a compound key.
       const key = String(item.id);
       const contribution = 1 / (k + index + 1); // rank is 1-indexed
       const existing = scores.get(key);

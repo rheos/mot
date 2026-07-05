@@ -136,41 +136,43 @@ export function searchTurns(
       .all(phrase, limit) as Turn[];
   }
 
-  // Async vector/hybrid path.
+  // Async vector/hybrid path. The ENTIRE body sits in one try/catch — this promise never
+  // rejects. ANY failure (embed, KNN, hydration, merge) degrades to [] with a log line,
+  // same as the EC 1 embedder-unavailable case; never a 500 to the caller.
   return (async (): Promise<Turn[]> => {
     if (!vecAvailable()) return [];
-    // Uniform over-fetch rule (W3): fetch k = min(limit * 4, 256) and filter down to limit.
-    const k = Math.min(limit * 4, 256);
-    let f32: Float32Array;
     try {
-      f32 = await embed(q);
-    } catch {
-      return []; // EC 1: embedder unavailable → empty result, not a 500
+      // Uniform over-fetch rule (W3): fetch k = min(limit * 4, 256), filter down to limit.
+      const k = Math.min(limit * 4, 256);
+      const f32 = await embed(q); // EC 1: embedder unavailable → caught below
+      const hits = vecKnn(getDb(), 'conversation_vec', f32, k);
+      if (hits.length === 0) return [];
+
+      const ids = hits.map((h) => h.id as number);
+      const placeholders = ids.map(() => '?').join(',');
+      let rows = getDb()
+        .prepare(
+          `SELECT id, chat_id, session_id, role, content, ts
+           FROM conversation WHERE id IN (${placeholders})`,
+        )
+        .all(...ids) as Turn[];
+
+      // Apply chat_id filter (post-KNN — W3 uniform over-fetch compensates for filter drop).
+      if (chatId) rows = rows.filter((r) => r.chat_id === chatId);
+
+      // Re-sort to match KNN distance order (IN clause returns in arbitrary order).
+      const rankMap = new Map(hits.map((h, i) => [h.id as number, i]));
+      rows.sort((a, b) => (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0));
+      rows = rows.slice(0, limit);
+
+      if (mode === 'vector') return rows;
+
+      // Hybrid: merge fts + vector via RRF (FR 14).
+      const ftsRows = searchTurns(q, chatId, limit); // binds to sync overload — no await
+      return rrfMerge<Turn>([ftsRows, rows], { limit });
+    } catch (err) {
+      console.error('[MOT/conversation] searchTurns vector/hybrid degraded to []:', err);
+      return [];
     }
-    const hits = vecKnn(getDb(), 'conversation_vec', f32, k);
-    if (hits.length === 0) return [];
-
-    const ids = hits.map((h) => h.id as number);
-    const placeholders = ids.map(() => '?').join(',');
-    let rows = getDb()
-      .prepare(
-        `SELECT id, chat_id, session_id, role, content, ts
-         FROM conversation WHERE id IN (${placeholders})`,
-      )
-      .all(...ids) as Turn[];
-
-    // Apply chat_id filter (post-KNN — W3 uniform over-fetch compensates for filter drop).
-    if (chatId) rows = rows.filter((r) => r.chat_id === chatId);
-
-    // Re-sort to match KNN distance order (IN clause returns in arbitrary order).
-    const rankMap = new Map(hits.map((h, i) => [h.id as number, i]));
-    rows.sort((a, b) => (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0));
-    rows = rows.slice(0, limit);
-
-    if (mode === 'vector') return rows;
-
-    // Hybrid: merge fts + vector via RRF (FR 14).
-    const ftsRows = searchTurns(q, chatId, limit); // binds to sync overload — no await
-    return rrfMerge<Turn>([ftsRows, rows], { limit });
   })();
 }
