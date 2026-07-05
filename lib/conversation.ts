@@ -1,6 +1,8 @@
 import { getDb } from '../db/client';
 import { ftsPhrase } from './fts';
-import { indexAsync } from './vec';
+import { indexAsync, vecKnn, vecAvailable } from './vec';
+import { embed } from './embedding';
+import { rrfMerge } from './rrf';
 
 const SESSION_GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -92,27 +94,83 @@ export function getTurnsForSession(sessionId: string): Turn[] {
     .all(sessionId) as Turn[];
 }
 
-export function searchTurns(q: string, chatId?: string, limit = 20): Turn[] {
-  const db = getDb();
-  const phrase = ftsPhrase(q);
-  if (chatId) {
+// Sync overload — existing ≤3-arg call sites bind here, return type is Turn[] (unchanged).
+export function searchTurns(q: string, chatId?: string, limit?: number): Turn[];
+// Async overload — 4-arg callers with mode:'vector'|'hybrid' bind here.
+export function searchTurns(
+  q: string,
+  chatId: string | undefined,
+  limit: number,
+  mode: 'vector' | 'hybrid',
+): Promise<Turn[]>;
+// Implementation.
+export function searchTurns(
+  q: string,
+  chatId?: string,
+  limit = 20,
+  mode?: 'fts' | 'vector' | 'hybrid',
+): Turn[] | Promise<Turn[]> {
+  if (!mode || mode === 'fts') {
+    // Existing FTS logic verbatim — do not change a character of this arm.
+    const db = getDb();
+    const phrase = ftsPhrase(q);
+    if (chatId) {
+      return db
+        .prepare(
+          `SELECT c.id, c.chat_id, c.session_id, c.role, c.content, c.ts
+           FROM conversation_fts f
+           JOIN conversation c ON c.rowid = f.rowid
+           WHERE conversation_fts MATCH ? AND c.chat_id = ?
+           ORDER BY rank LIMIT ?`,
+        )
+        .all(phrase, chatId, limit) as Turn[];
+    }
     return db
       .prepare(
         `SELECT c.id, c.chat_id, c.session_id, c.role, c.content, c.ts
          FROM conversation_fts f
          JOIN conversation c ON c.rowid = f.rowid
-         WHERE conversation_fts MATCH ? AND c.chat_id = ?
+         WHERE conversation_fts MATCH ?
          ORDER BY rank LIMIT ?`,
       )
-      .all(phrase, chatId, limit) as Turn[];
+      .all(phrase, limit) as Turn[];
   }
-  return db
-    .prepare(
-      `SELECT c.id, c.chat_id, c.session_id, c.role, c.content, c.ts
-       FROM conversation_fts f
-       JOIN conversation c ON c.rowid = f.rowid
-       WHERE conversation_fts MATCH ?
-       ORDER BY rank LIMIT ?`,
-    )
-    .all(phrase, limit) as Turn[];
+
+  // Async vector/hybrid path.
+  return (async (): Promise<Turn[]> => {
+    if (!vecAvailable()) return [];
+    // Uniform over-fetch rule (W3): fetch k = min(limit * 4, 256) and filter down to limit.
+    const k = Math.min(limit * 4, 256);
+    let f32: Float32Array;
+    try {
+      f32 = await embed(q);
+    } catch {
+      return []; // EC 1: embedder unavailable → empty result, not a 500
+    }
+    const hits = vecKnn(getDb(), 'conversation_vec', f32, k);
+    if (hits.length === 0) return [];
+
+    const ids = hits.map((h) => h.id as number);
+    const placeholders = ids.map(() => '?').join(',');
+    let rows = getDb()
+      .prepare(
+        `SELECT id, chat_id, session_id, role, content, ts
+         FROM conversation WHERE id IN (${placeholders})`,
+      )
+      .all(...ids) as Turn[];
+
+    // Apply chat_id filter (post-KNN — W3 uniform over-fetch compensates for filter drop).
+    if (chatId) rows = rows.filter((r) => r.chat_id === chatId);
+
+    // Re-sort to match KNN distance order (IN clause returns in arbitrary order).
+    const rankMap = new Map(hits.map((h, i) => [h.id as number, i]));
+    rows.sort((a, b) => (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0));
+    rows = rows.slice(0, limit);
+
+    if (mode === 'vector') return rows;
+
+    // Hybrid: merge fts + vector via RRF (FR 14).
+    const ftsRows = searchTurns(q, chatId, limit); // binds to sync overload — no await
+    return rrfMerge<Turn>([ftsRows, rows], { limit });
+  })();
 }
