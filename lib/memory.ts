@@ -6,7 +6,8 @@
 import { getDb } from '../db/client';
 import { nowIso } from './time';
 import { ftsPhrase } from './fts';
-import { indexAsync, vecDelete } from './vec';
+import { indexAsync, vecDelete, vecAvailable } from './vec';
+import { embeddingEnabled } from './embedding';
 
 export type MemoryType = 'fact' | 'preference' | 'deadline' | 'person';
 
@@ -227,8 +228,11 @@ export function writeMemory(input: WriteMemoryInput): WriteMemoryResult {
   if (newItemId !== null) {
     indexAsync(getDb(), 'memory_items_vec', newItemId, input.content.label + ' ' + input.reason);
   }
-  if (supersededItemId !== null) {
+  if (supersededItemId !== null && embeddingEnabled() && vecAvailable()) {
     // Delete the superseded row's vec entry (W3 — prevents unbounded orphan accumulation).
+    // Double-gated like indexAsync (W1): vecAvailable() alone means "extension loaded", not
+    // "vec tables exist" — in the embed-off test suite the 0007 tables are absent and an
+    // ungated DELETE would emit caught-but-noisy "no such table" errors.
     // `!` is safe: the guard above narrows, but TS drops the narrowing inside the closure.
     void Promise.resolve()
       .then(() => vecDelete(getDb(), 'memory_items_vec', supersededItemId!))

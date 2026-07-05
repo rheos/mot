@@ -21,6 +21,7 @@ import {
 } from './graph';
 import { getDb } from '../db/client';
 import { vecDelete, vecAvailable } from './vec';
+import { embeddingEnabled } from './embedding';
 
 // Server-only live data path (mirrors graph.ts:48-50 / backup.ts:31-33). Resolved at call time
 // so tests can point MOT_GRAPH_PATH at a temp file (same lazy-env pattern as DATABASE_URL).
@@ -128,7 +129,9 @@ export async function compactGraph(graphPath: string): Promise<void> {
 
   // FR 9: synchronously prune entity_vec for every entity that did not survive compaction.
   // This is admin-only (no user-facing latency budget) so synchronous is fine.
-  if (vecAvailable()) {
+  // Double-gated like indexAsync (W1): vecAvailable() alone means "extension loaded", not
+  // "vec tables exist" — in the embed-off test suite the 0007 tables are absent.
+  if (embeddingEnabled() && vecAvailable()) {
     const db = getDb();
     const survivorSet = new Set(survivors.map((e) => e.id));
     for (const e of entities.values()) {
