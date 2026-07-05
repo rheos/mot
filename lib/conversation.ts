@@ -1,5 +1,6 @@
 import { getDb } from '../db/client';
 import { ftsPhrase } from './fts';
+import { indexAsync } from './vec';
 
 const SESSION_GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -50,6 +51,13 @@ export function logTurn(chatId: string, role: 'user' | 'rheo', content: string):
     `INSERT INTO conversation (chat_id, session_id, role, content, ts) VALUES (?, ?, ?, ?, ?)`,
   );
   const result = stmt.run(chatId, sessionId, role, content, ts);
+
+  // Fire-and-forget vec indexing AFTER the durable write (FR 4/5) — a failed embed never
+  // fails the turn write. EMBED_INLINE=false defers embedding to the digest close
+  // (deferred sweep in upsertDigest) — FR 4 / EC 7.
+  if (process.env.EMBED_INLINE !== 'false') {
+    indexAsync(getDb(), 'conversation_vec', result.lastInsertRowid as number, content);
+  }
 
   return {
     id: result.lastInsertRowid as number,

@@ -12,6 +12,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createId } from '@paralleldrive/cuid2';
 import { nowIso } from './time';
+import { getDb } from '../db/client';
+import { indexAsync } from './vec';
 
 export interface EntityRecord {
   id: string;
@@ -67,6 +69,14 @@ export function appendEntity(rec: Omit<EntityRecord, 'id'>): EntityRecord {
   const file = graphPath();
   ensureDir(file);
   fs.appendFileSync(file, JSON.stringify(full) + '\n');
+  // Fire-and-forget vec indexing AFTER the durable JSONL append (FR 4/7), keyed on the
+  // cuid2 string id — not a SQLite rowid.
+  indexAsync(
+    getDb(),
+    'entity_vec',
+    full.id,
+    full.label + ' ' + JSON.stringify(full.properties),
+  );
   return full;
 }
 
@@ -111,10 +121,11 @@ function isConfirmPatch(rec: unknown): rec is ConfirmPatch {
 
 /**
  * Read the JSONL file and fold supersession patches over the entity records.
- * Internal helper — not exported. Tolerant of malformed lines (EC-1, AC-13): a line
- * that fails JSON.parse is logged and skipped, never thrown.
+ * Exported for Track-5 vector retrieval (KNN entity-id resolution against the folded
+ * graph). Tolerant of malformed lines (EC-1, AC-13): a line that fails JSON.parse is
+ * logged and skipped, never thrown.
  */
-function loadGraph(): EntityRecord[] {
+export function loadGraph(): EntityRecord[] {
   const file = graphPath();
   if (!fs.existsSync(file)) return [];
 

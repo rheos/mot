@@ -1,6 +1,8 @@
 import { getDb } from '../db/client';
 import { nowIso } from './time';
 import { getTurnsForSession } from './conversation';
+import { vecReplace, vecInsert, vecAvailable } from './vec';
+import { embed, embeddingEnabled } from './embedding';
 
 export interface DigestPayload {
   session_id: string;
@@ -55,6 +57,44 @@ export function upsertDigest(payload: DigestPayload): DigestRow {
     payload.parse_error ? 1 : 0,
     payload.turn_count,
   );
+
+  // a. Fire-and-forget re-index of the digest summary (vecReplace: idempotent on re-digest, FR 8).
+  //    Gate on embeddingEnabled() AND vecAvailable() — the same double gate indexAsync applies.
+  //    Without the embeddingEnabled() gate, every digest in the embed-off test suite would fire
+  //    a caught-but-noisy embed() throw and break the single-choke-point invariant (W1).
+  if (embeddingEnabled() && vecAvailable()) {
+    embed(payload.summary)
+      .then((f32) => vecReplace(getDb(), 'session_digest_vec', payload.session_id, f32))
+      .catch((err) => console.error('[MOT/vec] digest vec-replace error:', err));
+  }
+
+  // b. Deferred conversation sweep (AC 13, W2): when EMBED_INLINE is disabled, back-fill
+  //    conversation_vec for every turn of this session that was not embedded inline.
+  //    upsertDigest is the shared session-close choke point — it is called by BOTH the
+  //    bot's POST /api/conversation/digest route AND structuralDigest (MCP summarize_and_archive
+  //    dispatched at lib/mcp-tools.ts), so both paths get the sweep here.
+  //    Same double gate as (a): embeddingEnabled() AND vecAvailable().
+  if (process.env.EMBED_INLINE === 'false' && embeddingEnabled() && vecAvailable()) {
+    const sessionTurns = getTurnsForSession(payload.session_id);
+    if (sessionTurns.length > 0) {
+      // Find which turn IDs are not yet in conversation_vec.
+      const placeholders = sessionTurns.map(() => '?').join(',');
+      const embeddedIds = new Set(
+        (db.prepare(`SELECT turn_id FROM conversation_vec WHERE turn_id IN (${placeholders})`)
+          .all(...sessionTurns.map((t) => t.id)) as { turn_id: number }[])
+          .map((r) => r.turn_id)
+      );
+      const unembedded = sessionTurns.filter((t) => !embeddedIds.has(t.id));
+      // Fire-and-forget embed for each unembedded turn.
+      void Promise.allSettled(
+        unembedded.map((t) =>
+          embed(t.content)
+            .then((f32) => vecInsert(db, 'conversation_vec', t.id, f32))
+            .catch((err) => console.error('[MOT/vec] deferred sweep error:', err))
+        )
+      );
+    }
+  }
 
   return db
     .prepare(`SELECT * FROM session_digest WHERE session_id = ?`)

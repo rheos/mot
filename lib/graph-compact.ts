@@ -6,9 +6,10 @@
 //   - graphEntitySources   — GAP #2 idempotency primitive: every entity record's `source`,
 //                            status-agnostic, consumed by scripts/backfill-extraction.ts (Prompt 5).
 //
-// `loadGraph` in lib/graph.ts is private (not exported, line 117). The OQ-2=option(b) decision is
-// to raw-read the JSONL here and reproduce the supersede+confirm fold (lib/graph.ts:117-171) rather
-// than export the internal reader. All three exports share one raw-read primitive (`readRecords`).
+// This module raw-reads the JSONL and reproduces the supersede+confirm fold from lib/graph.ts
+// (OQ-2=option(b); loadGraph has since been exported for Track-5 retrieval, but the raw read
+// stays — graphEntitySources needs the unfolded per-line records, which loadGraph discards).
+// All three exports share one raw-read primitive (`readRecords`).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,6 +19,8 @@ import {
   type SupersessionPatch,
   type ConfirmPatch,
 } from './graph';
+import { getDb } from '../db/client';
+import { vecDelete, vecAvailable } from './vec';
 
 // Server-only live data path (mirrors graph.ts:48-50 / backup.ts:31-33). Resolved at call time
 // so tests can point MOT_GRAPH_PATH at a temp file (same lazy-env pattern as DATABASE_URL).
@@ -122,6 +125,22 @@ export async function compactGraph(graphPath: string): Promise<void> {
   const body = survivors.map((e) => JSON.stringify(e)).join('\n');
   fs.writeFileSync(tmp, survivors.length > 0 ? body + '\n' : '');
   fs.renameSync(tmp, graphPath);
+
+  // FR 9: synchronously prune entity_vec for every entity that did not survive compaction.
+  // This is admin-only (no user-facing latency budget) so synchronous is fine.
+  if (vecAvailable()) {
+    const db = getDb();
+    const survivorSet = new Set(survivors.map((e) => e.id));
+    for (const e of entities.values()) {
+      if (!survivorSet.has(e.id)) {
+        try {
+          vecDelete(db, 'entity_vec', e.id);
+        } catch (err) {
+          console.error('[MOT/vec] entity_vec prune error for', e.id, err);
+        }
+      }
+    }
+  }
 
   console.log(
     `[MOT/graph-compact] compacted: ${records.length} records → ${survivors.length} active entities`,

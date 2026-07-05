@@ -6,6 +6,7 @@
 import { getDb } from '../db/client';
 import { nowIso } from './time';
 import { ftsPhrase } from './fts';
+import { indexAsync, vecDelete } from './vec';
 
 export type MemoryType = 'fact' | 'preference' | 'deadline' | 'person';
 
@@ -110,8 +111,14 @@ export function writeMemory(input: WriteMemoryInput): WriteMemoryResult {
   // chat_id is never taken from caller input.
   const chatId = sourceRow.chat_id;
 
+  // Closure slots the transaction callback fills; read AFTER the transaction commits so the
+  // fire-and-forget vec ops reflect committed state only (better-sqlite3 transactions are
+  // synchronous, so a throw inside rolls back AND skips the vec block below).
+  let newItemId: number | null = null;
+  let supersededItemId: number | null = null;
+
   // Steps 3–7 run inside a transaction so insert + superseded_by back-fill are atomic.
-  return db.transaction((): WriteMemoryResult => {
+  const result = db.transaction((): WriteMemoryResult => {
     // 3. Normalize label.
     const labelNorm = input.content.label.trim().toLowerCase();
     const propertiesJson = JSON.stringify(input.content.properties);
@@ -147,6 +154,7 @@ export function writeMemory(input: WriteMemoryInput): WriteMemoryResult {
           input.reason,
           ts,
         );
+      newItemId = ins.lastInsertRowid as number;
       return db
         .prepare(`SELECT * FROM memory_items WHERE id = ?`)
         .get(ins.lastInsertRowid) as MemoryRow;
@@ -190,9 +198,11 @@ export function writeMemory(input: WriteMemoryInput): WriteMemoryResult {
       );
 
     const newId = ins.lastInsertRowid as number;
+    newItemId = newId;
 
     // Set old row's superseded_by — the only mutation allowed on an existing row.
     db.prepare(`UPDATE memory_items SET superseded_by = ? WHERE id = ?`).run(newId, current.id);
+    supersededItemId = current.id;
 
     const newRow = db
       .prepare(`SELECT * FROM memory_items WHERE id = ?`)
@@ -212,6 +222,20 @@ export function writeMemory(input: WriteMemoryInput): WriteMemoryResult {
 
     return newRow;
   })();
+
+  // Fire-and-forget vec ops for this write (FR 4–6, W3).
+  if (newItemId !== null) {
+    indexAsync(getDb(), 'memory_items_vec', newItemId, input.content.label + ' ' + input.reason);
+  }
+  if (supersededItemId !== null) {
+    // Delete the superseded row's vec entry (W3 — prevents unbounded orphan accumulation).
+    // `!` is safe: the guard above narrows, but TS drops the narrowing inside the closure.
+    void Promise.resolve()
+      .then(() => vecDelete(getDb(), 'memory_items_vec', supersededItemId!))
+      .catch((err) => console.error('[MOT/vec] memory supersede vec-delete error:', err));
+  }
+
+  return result;
 }
 
 // ── Read path ─────────────────────────────────────────────────────────────────
