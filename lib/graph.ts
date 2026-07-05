@@ -12,6 +12,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createId } from '@paralleldrive/cuid2';
 import { nowIso } from './time';
+import { getDb } from '../db/client';
+import { indexAsync, vecKnn, vecAvailable } from './vec';
+import { embed, embeddingEnabled } from './embedding';
+import { rrfMerge } from './rrf';
 
 export interface EntityRecord {
   id: string;
@@ -67,6 +71,14 @@ export function appendEntity(rec: Omit<EntityRecord, 'id'>): EntityRecord {
   const file = graphPath();
   ensureDir(file);
   fs.appendFileSync(file, JSON.stringify(full) + '\n');
+  // Fire-and-forget vec indexing AFTER the durable JSONL append (FR 4/7), keyed on the
+  // cuid2 string id — not a SQLite rowid.
+  indexAsync(
+    getDb(),
+    'entity_vec',
+    full.id,
+    full.label + ' ' + JSON.stringify(full.properties),
+  );
   return full;
 }
 
@@ -111,10 +123,11 @@ function isConfirmPatch(rec: unknown): rec is ConfirmPatch {
 
 /**
  * Read the JSONL file and fold supersession patches over the entity records.
- * Internal helper — not exported. Tolerant of malformed lines (EC-1, AC-13): a line
- * that fails JSON.parse is logged and skipped, never thrown.
+ * Exported for Track-5 vector retrieval (KNN entity-id resolution against the folded
+ * graph). Tolerant of malformed lines (EC-1, AC-13): a line that fails JSON.parse is
+ * logged and skipped, never thrown.
  */
-function loadGraph(): EntityRecord[] {
+export function loadGraph(): EntityRecord[] {
   const file = graphPath();
   if (!fs.existsSync(file)) return [];
 
@@ -206,34 +219,126 @@ export function getEntity(id: string): {
   return { record, relations: { outbound, inbound } };
 }
 
+// The ONE result bound for the entity vector/hybrid arms: vector mode truncates to it,
+// hybrid passes it to rrfMerge AND to the FTS-fallback truncation (replaces the old
+// hard-coded rrfMerge-20 / vector-256 asymmetry). 50 matches the AC-6 graph result cap
+// (relatedEntities' 50-entity ceiling) — the sync fts arm is uncapped, but the entity
+// store is small (extraction.ts warns at ≥1000 actives), so 50 preserves the fts arm's
+// effective full-result behavior in practice. The sync fts arm itself stays uncapped.
+const ENTITY_SEARCH_LIMIT = 50;
+
 /**
- * Keyword search over the graph (FR 7). Case-insensitive substring match against the
- * label and the serialized properties.
+ * Keyword / semantic search over the graph (FR 7, FR 11).
+ *   - default (mode 'fts' / no mode): case-insensitive substring match against the label
+ *     and serialized properties — SYNC, returns EntityRecord[]. Existing ≤3-arg call sites
+ *     (extraction.ts dedup scan, mcp-tools.ts entity_search) bind here unchanged (AC-4).
+ *   - mode 'vector': sqlite-vec KNN over entity_vec, resolved back against loadGraph().
+ *   - mode 'hybrid': RRF-merge of the fts and vector result lists (FR 14).
+ * Active/confirmed filtering is identical across arms:
  *   - default: active records only (superseded_by === null && valid_until === null) — AC-5
  *   - unconfirmedOnly: confirmed === false && superseded_by === null — AC-5
  *   - type: additionally filter by entity type.
  */
+// Sync overload — ≤3-arg call sites (extraction.ts, mcp-tools.ts fts path) bind here.
 export function searchEntities(
   q: string,
   type?: EntityRecord['type'],
   unconfirmedOnly?: boolean,
-): EntityRecord[] {
-  const all = loadGraph();
-  const needle = q.toLowerCase();
+): EntityRecord[];
+// Async overload — 4-arg callers with mode:'vector'|'hybrid'.
+export function searchEntities(
+  q: string,
+  type: EntityRecord['type'] | undefined,
+  unconfirmedOnly: boolean | undefined,
+  mode: 'vector' | 'hybrid',
+): Promise<EntityRecord[]>;
+// Implementation.
+export function searchEntities(
+  q: string,
+  type?: EntityRecord['type'],
+  unconfirmedOnly?: boolean,
+  mode?: 'fts' | 'vector' | 'hybrid',
+): EntityRecord[] | Promise<EntityRecord[]> {
+  if (!mode || mode === 'fts') {
+    // Existing in-memory substring search — verbatim, do not change.
+    const all = loadGraph();
+    const needle = q.toLowerCase();
 
-  return all.filter((e) => {
-    const haystack =
-      e.label.toLowerCase() + ' ' + JSON.stringify(e.properties).toLowerCase();
-    if (!haystack.includes(needle)) return false;
+    return all.filter((e) => {
+      const haystack =
+        e.label.toLowerCase() + ' ' + JSON.stringify(e.properties).toLowerCase();
+      if (!haystack.includes(needle)) return false;
 
-    if (type !== undefined && e.type !== type) return false;
+      if (type !== undefined && e.type !== type) return false;
 
-    if (unconfirmedOnly === true) {
-      return e.confirmed === false && e.superseded_by === null;
+      if (unconfirmedOnly === true) {
+        return e.confirmed === false && e.superseded_by === null;
+      }
+      // Default: active records only.
+      return e.superseded_by === null && e.valid_until === null;
+    });
+  }
+
+  // Async vector/hybrid path. Each arm carries its OWN guard, so this promise NEVER
+  // rejects (the 45f16fe never-reject guarantee, split per arm for the ratified
+  // FTS-fallback contract):
+  //   - vector arm → [] on ANY degrade: empty/whitespace q (no embed call), extension or
+  //     embedder unavailable (silent), embed/KNN/graph-fold throw (logged).
+  //   - hybrid → the fts-arm list (truncated to ENTITY_SEARCH_LIMIT) whenever the vector
+  //     arm degrades or has no hits (FTS-fallback, NOT []); [] with a log line only if
+  //     the fts arm ITSELF throws.
+  return (async (): Promise<EntityRecord[]> => {
+    // ── Vector arm ──
+    let vectorHits: EntityRecord[] = [];
+    if (q.trim() !== '' && vecAvailable() && embeddingEnabled()) {
+      try {
+        // Uniform over-fetch rule (W3): k = min(limit*4, 256) with limit = ENTITY_SEARCH_LIMIT
+        // (→ 200); post-KNN active/confirmed/type filters can drop hits (EC 4/EC 6).
+        const k = Math.min(ENTITY_SEARCH_LIMIT * 4, 256);
+        const f32 = await embed(q); // EC 1: embedder init failure → caught below
+        const hits = vecKnn(getDb(), 'entity_vec', f32, k);
+        if (hits.length > 0) {
+          // Resolve entity ids against the in-memory graph (EC 4: skip unresolvable ids).
+          // entity_vec keys are TEXT cuid2 ids — no BigInt on this path.
+          const all = loadGraph();
+          const byId = new Map(all.map((e) => [e.id, e]));
+          vectorHits = hits
+            .map((h) => byId.get(h.id as string))
+            .filter((e): e is EntityRecord => e !== undefined)
+            // Same active/filter logic as the fts arm.
+            .filter((e) => {
+              if (type !== undefined && e.type !== type) return false;
+              if (unconfirmedOnly === true) {
+                return e.confirmed === false && e.superseded_by === null;
+              }
+              return e.superseded_by === null && e.valid_until === null;
+            })
+            .slice(0, ENTITY_SEARCH_LIMIT);
+        }
+      } catch (err) {
+        console.error('[MOT/graph] searchEntities vector arm degraded to []:', err);
+        vectorHits = [];
+      }
     }
-    // Default: active records only.
-    return e.superseded_by === null && e.valid_until === null;
-  });
+
+    if (mode === 'vector') return vectorHits;
+
+    // ── Hybrid: fts arm under its own guard ──
+    let ftsResults: EntityRecord[];
+    try {
+      ftsResults = searchEntities(q, type, unconfirmedOnly); // binds sync overload
+    } catch (err) {
+      console.error('[MOT/graph] searchEntities hybrid fts arm degraded to []:', err);
+      return [];
+    }
+
+    // FTS-fallback: a degraded/empty vector arm yields the mode:'fts' result, truncated
+    // to the entity path's one limit (the sync arm is uncapped; hybrid output is bounded).
+    if (vectorHits.length === 0) return ftsResults.slice(0, ENTITY_SEARCH_LIMIT);
+
+    // Both arms live: merge via RRF (FR 14).
+    return rrfMerge<EntityRecord>([ftsResults, vectorHits], { limit: ENTITY_SEARCH_LIMIT });
+  })();
 }
 
 /**

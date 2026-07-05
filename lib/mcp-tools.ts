@@ -3,7 +3,7 @@ import { buildStatus } from './status';
 import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './validation';
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
-import { writeMemory, getActiveMemory, searchActiveMemory } from './memory';
+import { writeMemory, getActiveMemory, searchActiveMemory, searchActiveMemoryVector, searchActiveMemoryHybrid } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
 import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
@@ -244,14 +244,19 @@ export function listMcpTools(): ToolDef[] {
     {
       name: 'chat_search',
       description:
-        'Full-text keyword search over Rheo conversation history. ' +
-        'Use when Taylor asks about something discussed in a past session.',
+        'Full-text or semantic search over Rheo conversation history. mode defaults to fts. ' +
+        'Pass mode:vector or mode:hybrid for semantic or combined retrieval.',
       inputSchema: {
         type: 'object',
         properties: {
           q:       { type: 'string', description: 'Search query (FTS5 porter-stemmed).' },
           chat_id: { type: 'string', description: 'Restrict to one chat. Omit to search all.' },
           limit:   { type: 'integer', minimum: 1, maximum: 50 },
+          mode: {
+            type: 'string',
+            enum: ['fts', 'vector', 'hybrid'],
+            description: 'Search mode. fts (default): keyword/FTS5. vector: semantic KNN. hybrid: RRF merge of fts + vector.',
+          },
         },
         required: ['q'],
       },
@@ -300,6 +305,7 @@ export function listMcpTools(): ToolDef[] {
       description:
         'Return active (non-superseded, non-conflicted) memory items, most recent first. ' +
         'Pass q to keyword-search them by FTS5 relevance instead. ' +
+        'Pass mode:vector or mode:hybrid for semantic retrieval of memory. ' +
         'Entity-graph / topic-thread / procedural-note search are separate Track-2 tools.',
       inputSchema: {
         type: 'object',
@@ -307,6 +313,11 @@ export function listMcpTools(): ToolDef[] {
           chat_id: { type: 'string', description: 'Restrict to one chat. Omit to return all active items.' },
           limit:   { type: 'integer', minimum: 1, maximum: 50, description: 'Max items to return. Default 20.' },
           q:       { type: 'string', description: 'Optional keyword search (FTS5 porter-stemmed). When provided, filters results by match. Empty string ignored.' },
+          mode: {
+            type: 'string',
+            enum: ['fts', 'vector', 'hybrid'],
+            description: 'Search mode. fts (default): keyword/FTS5. vector: semantic KNN. hybrid: RRF merge of fts + vector.',
+          },
         },
       },
     },
@@ -368,6 +379,11 @@ export function listMcpTools(): ToolDef[] {
           q:    { type: 'string', description: 'Case-insensitive keyword.' },
           type: { type: 'string', enum: ['Person', 'Project', 'Deadline', 'Preference', 'Fact'] },
           unconfirmed_only: { type: 'boolean', description: 'Return unconfirmed candidates only.' },
+          mode: {
+            type: 'string',
+            enum: ['fts', 'vector', 'hybrid'],
+            description: 'Search mode. fts (default): keyword/FTS5. vector: semantic KNN. hybrid: RRF merge of fts + vector.',
+          },
         },
         required: ['q'],
       },
@@ -592,12 +608,17 @@ export async function callMcpTool(
     case 'chat_recent':
       return text(getRecentTurns(args.chat_id as string, (args.n as number) ?? 12));
 
-    case 'chat_search':
-      return text(searchTurns(
-        args.q as string,
-        args.chat_id as string | undefined,
-        (args.limit as number) ?? 20,
-      ));
+    case 'chat_search': {
+      const mode = args.mode as 'fts' | 'vector' | 'hybrid' | undefined;
+      const q = args.q as string;
+      const chatId = args.chat_id as string | undefined;
+      const limit = (args.limit as number) ?? 20;
+      if (mode === 'vector' || mode === 'hybrid') {
+        // W5: MUST await — the 4-arg overload returns Promise<Turn[]>.
+        return text(await searchTurns(q, chatId, limit, mode));
+      }
+      return text(searchTurns(q, chatId, limit)); // sync overload
+    }
 
     case 'summarize_and_archive': {
       const result = structuralDigest(args.session_id as string);
@@ -619,6 +640,14 @@ export async function callMcpTool(
       const chatId = typeof args.chat_id === 'string' ? args.chat_id : undefined;
       const limit  = typeof args.limit === 'number' ? args.limit : 20;
       const q = typeof args.q === 'string' ? args.q : '';
+      const mode = args.mode as 'fts' | 'vector' | 'hybrid' | undefined;
+      if (mode === 'vector') {
+        return text(await searchActiveMemoryVector(q, chatId, limit));
+      }
+      if (mode === 'hybrid') {
+        return text(await searchActiveMemoryHybrid(q, chatId, limit));
+      }
+      // Default fts behavior — unchanged.
       // A non-empty q switches to FTS keyword search; otherwise return recent active items.
       if (q.trim() !== '') {
         return text(searchActiveMemory(q, chatId, limit));
@@ -657,12 +686,17 @@ export async function callMcpTool(
       return text(result);
     }
 
-    case 'entity_search':
-      return text(searchEntities(
-        args.q as string,
-        args.type as EntityRecord['type'] | undefined,
-        typeof args.unconfirmed_only === 'boolean' ? args.unconfirmed_only : undefined,
-      ));
+    case 'entity_search': {
+      const mode = args.mode as 'fts' | 'vector' | 'hybrid' | undefined;
+      const q = args.q as string;
+      const entityType = args.type as EntityRecord['type'] | undefined;
+      const unconfirmedOnly = typeof args.unconfirmed_only === 'boolean' ? args.unconfirmed_only : undefined;
+      if (mode === 'vector' || mode === 'hybrid') {
+        // W5: MUST await — the 4-arg overload returns Promise<EntityRecord[]>.
+        return text(await searchEntities(q, entityType, unconfirmedOnly, mode));
+      }
+      return text(searchEntities(q, entityType, unconfirmedOnly)); // sync overload
+    }
 
     case 'entity_related':
       // NOTE: relatedEntities traversal includes superseded/expired — intentional.

@@ -33,6 +33,13 @@ const nextConfig = {
       'better-sqlite3',
       'bindings',
       '@node-rs/argon2',
+      // Track 5 (semantic retrieval): fastembed pulls onnxruntime-node + @anush008/tokenizers
+      // (both ship .node binaries); sqlite-vec ships a platform-specific loadable extension.
+      // Keep all four external so Next never traces/bundles their native artifacts.
+      'fastembed',
+      'onnxruntime-node',
+      '@anush008/tokenizers',
+      'sqlite-vec',
     ],
     // instrumentation.ts register() hook — server-side boot work runs once.
     instrumentationHook: true,
@@ -51,6 +58,18 @@ const nextConfig = {
           request === '@node-rs/argon2' ||
           request.startsWith('@node-rs/argon2-') ||
           request === 'node-cron' ||
+          // Track 5 (semantic retrieval) native deps. sqlite-vec ships a loadable extension
+          // resolved at runtime via require.resolve from a platform sub-package
+          // (sqlite-vec-{darwin,linux}-{x64,arm64} / -windows-x64); startsWith('sqlite-vec-')
+          // covers every platform variant, including this box's darwin-x64. fastembed pulls
+          // onnxruntime-node (+ onnxruntime-* platform binaries) and @anush008/tokenizers,
+          // all of which carry .node binaries webpack cannot parse.
+          request === 'sqlite-vec' ||
+          request.startsWith('sqlite-vec-') ||
+          request === 'fastembed' ||
+          request === '@anush008/tokenizers' ||
+          request.startsWith('@anush008/tokenizers-') ||
+          request.startsWith('onnxruntime') ||
           NODE_BUILTINS.has(request)
         ) {
           return callback(null, 'commonjs ' + request.replace(/^node:/, ''));

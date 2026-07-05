@@ -153,7 +153,10 @@ describe('Recallatron Phase 2 — entity graph (lib/graph)', () => {
     const another = appendEntity(entityInput({ label: 'Also valid' }));
 
     // Indirectly drives loadGraph; must not throw and must return the valid entities.
-    let results: ReturnType<typeof searchEntities> = [];
+    // Annotate via a non-overloaded EntityRecord[]-returning fn: searchEntities gained a
+    // sync|async overload pair (Track 5), so ReturnType<typeof searchEntities> now resolves
+    // to the async (last) overload. relatedEntities returns the same element type, sync.
+    let results: ReturnType<typeof relatedEntities> = [];
     expect(() => {
       results = searchEntities('');
     }).not.toThrow();

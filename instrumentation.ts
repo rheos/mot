@@ -23,4 +23,22 @@ export async function register(): Promise<void> {
   // Nightly DB backup (FR-DB-2): register the 02:00 VACUUM INTO cron once at boot.
   const { scheduleNightly } = await import('./lib/backup');
   scheduleNightly();
+  // Boot warm-up (W4): trigger the ~90MB model download at service start so the first
+  // user turn never pays the download cost. Non-blocking — boot never waits on this.
+  // The try/catch covers the dynamic import too: a module-eval throw (e.g. a broken
+  // native dep on a degraded box) logs and continues, never fails boot. The prod
+  // fail-fast path for the vec EXTENSION lives in getDb()/loadVecExtension — that one
+  // is intentionally NOT caught here.
+  if (process.env.MOT_EMBED_DISABLE !== '1') {
+    try {
+      const { embed } = await import('./lib/embedding');
+      // The success line is load-bearing for the ops runbook: CLAUDE.md tells the operator
+      // to `journalctl -u mot.service | grep 'warmup'` after the first deploy.
+      embed('warmup')
+        .then(() => console.log('[MOT/embed] boot warmup complete'))
+        .catch((err) => console.error('[MOT/embed] boot warmup failed:', err));
+    } catch (err) {
+      console.error('[MOT/embed] boot warmup failed to load embedding module:', err);
+    }
+  }
 }

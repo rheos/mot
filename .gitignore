@@ -13,6 +13,10 @@ backups/
 # Recallatron entity graph — server-only live data, same class as mot.db (OQ-1=B)
 /ontology/
 
+# Track 5 fastembed model download cache — server-only live data, same class as mot.db
+# (~90MB, deploy-preserved). Never committed.
+.model-cache/
+
 # Playwright e2e artifacts (generated per run)
 /test-results/
 /playwright-report/
