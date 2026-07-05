@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadVecExtension, vecAvailable } from '../lib/vec';
 
 type DB = Database.Database;
 
@@ -16,6 +17,10 @@ export function getDb(): DB {
     _db.pragma('journal_mode = WAL');
     _db.pragma('busy_timeout = 5000');
     _db.pragma('foreign_keys = ON');
+    // Track 5 (FR 1/FR 2): load sqlite-vec at DB-open time, BEFORE migrate_db() runs — the
+    // CREATE VIRTUAL TABLE ... USING vec0 in 0007_vec.sql needs the extension already loaded.
+    // vecAvailable() flips false (not throw) on a dev/test load failure so the app still boots.
+    loadVecExtension(_db);
   }
   return _db;
 }
@@ -34,6 +39,7 @@ const HAND_WRITTEN_MIGRATIONS = [
   '0004_topic_threads.sql',
   '0005_procedural_notes.sql',
   '0006_memory_fts.sql',
+  '0007_vec.sql',
 ];
 
 function applyHandWrittenMigrations(db: DB, migrationsFolder: string): void {
@@ -50,6 +56,12 @@ function applyHandWrittenMigrations(db: DB, migrationsFolder: string): void {
 
   for (const name of HAND_WRITTEN_MIGRATIONS) {
     if (applied.has(name)) continue;
+    // Skip the vec migration if the extension didn't load — a no-vec box still boots
+    // FTS/tickets (EC 1 / FR 18), it just has no semantic tables.
+    if (name === '0007_vec.sql' && !vecAvailable()) {
+      console.warn('[MOT/vec] skipping 0007_vec.sql — sqlite-vec extension not available');
+      continue;
+    }
     const file = path.join(migrationsFolder, name);
     if (!fs.existsSync(file)) continue;
     const sql = fs.readFileSync(file, 'utf8');

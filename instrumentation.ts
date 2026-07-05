@@ -23,4 +23,10 @@ export async function register(): Promise<void> {
   // Nightly DB backup (FR-DB-2): register the 02:00 VACUUM INTO cron once at boot.
   const { scheduleNightly } = await import('./lib/backup');
   scheduleNightly();
+  // Boot warm-up (W4): trigger the ~90MB model download at service start so the first
+  // user turn never pays the download cost. Non-blocking — boot never waits on this.
+  if (process.env.MOT_EMBED_DISABLE !== '1') {
+    const { embed } = await import('./lib/embedding');
+    embed('warmup').catch((err) => console.error('[MOT/embed] boot warmup failed:', err));
+  }
 }
