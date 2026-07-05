@@ -316,17 +316,19 @@ export function searchActiveMemory(q: string, chatId?: string, limit = 20): Memo
 
 // sqlite-vec KNN search over active memory items (Track-5 semantic retrieval, FR 11/12).
 // searchActiveMemory keeps its sync FTS signature untouched; this is the separate async
-// vector capability. The ENTIRE body after the vecAvailable() gate sits in one try/catch
-// (45f16fe hardened shape) — the returned promise NEVER rejects; any failure (embed, KNN,
-// hydration, sort) degrades to [] with a log line, matching the EC-1 embedder-unavailable
-// case. Active-only filter (conflict_flag = 0 AND superseded_by IS NULL) is applied post-KNN
-// in SQL — same settled-truth predicate as getActiveMemory / searchActiveMemory.
+// vector capability. The ENTIRE body after the guards sits in one try/catch (45f16fe
+// hardened shape) — the returned promise NEVER rejects. Degrades to []: empty/whitespace q
+// (uniform empty-q guard — no embed call), extension or embedder unavailable (silent), or
+// any embed/KNN/hydration throw (logged). Active-only filter (conflict_flag = 0 AND
+// superseded_by IS NULL) is applied post-KNN in SQL — same settled-truth predicate as
+// getActiveMemory / searchActiveMemory.
 export async function searchActiveMemoryVector(
   q: string,
   chatId?: string,
   limit = 20,
 ): Promise<MemoryRow[]> {
-  if (!vecAvailable()) return [];
+  if (q.trim() === '') return [];
+  if (!vecAvailable() || !embeddingEnabled()) return [];
   try {
     // W3 uniform over-fetch: the active-only filter can drop hits, so fetch
     // k = min(limit*4, 256) and truncate to limit after filtering.
@@ -367,18 +369,33 @@ export async function searchActiveMemoryVector(
 }
 
 // Hybrid retrieval over active memory: RRF-merge (FR 14) of the FTS list and the vector
-// list. The vector arm never rejects (hardened above); the FTS arm reuses the existing
-// sync path (searchActiveMemory for a real query, getActiveMemory for empty q).
+// list, with the ratified FTS-fallback contract. The fts arm reuses the existing sync path
+// (searchActiveMemory for a real query, getActiveMemory recency fallback for empty q — the
+// exact memory_recent fts-arm behavior) under its OWN guard: a throw there degrades to []
+// with a log line, so this promise never rejects. When the vector arm degrades or has no
+// hits (empty q, extension/embedder off, embed/KNN throw, zero KNN hits), the hybrid result
+// is the fts-arm list (already truncated to `limit` by its SQL LIMIT) — NOT [].
 export async function searchActiveMemoryHybrid(
   q: string,
   chatId?: string,
   limit = 20,
 ): Promise<MemoryRow[]> {
-  const [vectorResults, ftsResults] = await Promise.all([
-    searchActiveMemoryVector(q, chatId, limit),
-    Promise.resolve(
-      q.trim() !== '' ? searchActiveMemory(q, chatId, limit) : getActiveMemory(chatId, limit),
-    ),
-  ]);
+  // ── FTS arm under its own guard ──
+  let ftsResults: MemoryRow[];
+  try {
+    ftsResults =
+      q.trim() !== '' ? searchActiveMemory(q, chatId, limit) : getActiveMemory(chatId, limit);
+  } catch (err) {
+    console.error('[MOT/memory] searchActiveMemoryHybrid fts arm degraded to []:', err);
+    return [];
+  }
+
+  // ── Vector arm (never rejects; [] on any degrade) ──
+  const vectorResults = await searchActiveMemoryVector(q, chatId, limit);
+
+  // FTS-fallback: a degraded/empty vector arm yields exactly the fts-arm result.
+  if (vectorResults.length === 0) return ftsResults;
+
+  // Both arms live: merge via RRF (FR 14).
   return rrfMerge<MemoryRow>([ftsResults, vectorResults], { limit });
 }

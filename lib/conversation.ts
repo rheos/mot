@@ -1,7 +1,7 @@
 import { getDb } from '../db/client';
 import { ftsPhrase } from './fts';
 import { indexAsync, vecKnn, vecAvailable } from './vec';
-import { embed } from './embedding';
+import { embed, embeddingEnabled } from './embedding';
 import { rrfMerge } from './rrf';
 
 const SESSION_GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -136,43 +136,62 @@ export function searchTurns(
       .all(phrase, limit) as Turn[];
   }
 
-  // Async vector/hybrid path. The ENTIRE body sits in one try/catch — this promise never
-  // rejects. ANY failure (embed, KNN, hydration, merge) degrades to [] with a log line,
-  // same as the EC 1 embedder-unavailable case; never a 500 to the caller.
+  // Async vector/hybrid path. Each arm carries its OWN guard, so this promise NEVER
+  // rejects (the 45f16fe never-reject guarantee, split per arm for the ratified
+  // FTS-fallback contract):
+  //   - vector arm → [] on ANY degrade: empty/whitespace q (no embed call), extension or
+  //     embedder unavailable (silent), embed/KNN/hydration throw (logged).
+  //   - hybrid → the plain fts-arm list whenever the vector arm degrades or has no hits
+  //     (FTS-fallback, NOT []); [] with a log line only if the fts arm ITSELF throws.
   return (async (): Promise<Turn[]> => {
-    if (!vecAvailable()) return [];
+    // ── Vector arm ──
+    let vectorRows: Turn[] = [];
+    if (q.trim() !== '' && vecAvailable() && embeddingEnabled()) {
+      try {
+        // Uniform over-fetch rule (W3): fetch k = min(limit * 4, 256), filter down to limit.
+        const k = Math.min(limit * 4, 256);
+        const f32 = await embed(q); // EC 1: embedder init failure → caught below
+        const hits = vecKnn(getDb(), 'conversation_vec', f32, k);
+        if (hits.length > 0) {
+          const ids = hits.map((h) => h.id as number);
+          const placeholders = ids.map(() => '?').join(',');
+          let rows = getDb()
+            .prepare(
+              `SELECT id, chat_id, session_id, role, content, ts
+               FROM conversation WHERE id IN (${placeholders})`,
+            )
+            .all(...ids) as Turn[];
+
+          // Apply chat_id filter (post-KNN — W3 uniform over-fetch compensates for filter drop).
+          if (chatId) rows = rows.filter((r) => r.chat_id === chatId);
+
+          // Re-sort to match KNN distance order (IN clause returns in arbitrary order).
+          const rankMap = new Map(hits.map((h, i) => [h.id as number, i]));
+          rows.sort((a, b) => (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0));
+          vectorRows = rows.slice(0, limit);
+        }
+      } catch (err) {
+        console.error('[MOT/conversation] searchTurns vector arm degraded to []:', err);
+        vectorRows = [];
+      }
+    }
+
+    if (mode === 'vector') return vectorRows;
+
+    // ── Hybrid: fts arm under its own guard ──
+    let ftsRows: Turn[];
     try {
-      // Uniform over-fetch rule (W3): fetch k = min(limit * 4, 256), filter down to limit.
-      const k = Math.min(limit * 4, 256);
-      const f32 = await embed(q); // EC 1: embedder unavailable → caught below
-      const hits = vecKnn(getDb(), 'conversation_vec', f32, k);
-      if (hits.length === 0) return [];
-
-      const ids = hits.map((h) => h.id as number);
-      const placeholders = ids.map(() => '?').join(',');
-      let rows = getDb()
-        .prepare(
-          `SELECT id, chat_id, session_id, role, content, ts
-           FROM conversation WHERE id IN (${placeholders})`,
-        )
-        .all(...ids) as Turn[];
-
-      // Apply chat_id filter (post-KNN — W3 uniform over-fetch compensates for filter drop).
-      if (chatId) rows = rows.filter((r) => r.chat_id === chatId);
-
-      // Re-sort to match KNN distance order (IN clause returns in arbitrary order).
-      const rankMap = new Map(hits.map((h, i) => [h.id as number, i]));
-      rows.sort((a, b) => (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0));
-      rows = rows.slice(0, limit);
-
-      if (mode === 'vector') return rows;
-
-      // Hybrid: merge fts + vector via RRF (FR 14).
-      const ftsRows = searchTurns(q, chatId, limit); // binds to sync overload — no await
-      return rrfMerge<Turn>([ftsRows, rows], { limit });
+      ftsRows = searchTurns(q, chatId, limit); // binds to sync overload — no await
     } catch (err) {
-      console.error('[MOT/conversation] searchTurns vector/hybrid degraded to []:', err);
+      console.error('[MOT/conversation] searchTurns hybrid fts arm degraded to []:', err);
       return [];
     }
+
+    // FTS-fallback: a degraded/empty vector arm yields exactly the mode:'fts' result
+    // (already truncated to `limit` by the sync arm's SQL LIMIT).
+    if (vectorRows.length === 0) return ftsRows;
+
+    // Both arms live: merge via RRF (FR 14).
+    return rrfMerge<Turn>([ftsRows, vectorRows], { limit });
   })();
 }

@@ -14,7 +14,7 @@ import { createId } from '@paralleldrive/cuid2';
 import { nowIso } from './time';
 import { getDb } from '../db/client';
 import { indexAsync, vecKnn, vecAvailable } from './vec';
-import { embed } from './embedding';
+import { embed, embeddingEnabled } from './embedding';
 import { rrfMerge } from './rrf';
 
 export interface EntityRecord {
@@ -219,6 +219,14 @@ export function getEntity(id: string): {
   return { record, relations: { outbound, inbound } };
 }
 
+// The ONE result bound for the entity vector/hybrid arms: vector mode truncates to it,
+// hybrid passes it to rrfMerge AND to the FTS-fallback truncation (replaces the old
+// hard-coded rrfMerge-20 / vector-256 asymmetry). 50 matches the AC-6 graph result cap
+// (relatedEntities' 50-entity ceiling) — the sync fts arm is uncapped, but the entity
+// store is small (extraction.ts warns at ≥1000 actives), so 50 preserves the fts arm's
+// effective full-result behavior in practice. The sync fts arm itself stays uncapped.
+const ENTITY_SEARCH_LIMIT = 50;
+
 /**
  * Keyword / semantic search over the graph (FR 7, FR 11).
  *   - default (mode 'fts' / no mode): case-insensitive substring match against the label
@@ -271,45 +279,65 @@ export function searchEntities(
     });
   }
 
-  // Async vector/hybrid path. The ENTIRE body sits in one try/catch (45f16fe hardened
-  // shape) — this promise NEVER rejects. ANY failure (embed, KNN, graph fold, merge)
-  // degrades to [] with a log line, same as the EC-1 embedder-unavailable case.
+  // Async vector/hybrid path. Each arm carries its OWN guard, so this promise NEVER
+  // rejects (the 45f16fe never-reject guarantee, split per arm for the ratified
+  // FTS-fallback contract):
+  //   - vector arm → [] on ANY degrade: empty/whitespace q (no embed call), extension or
+  //     embedder unavailable (silent), embed/KNN/graph-fold throw (logged).
+  //   - hybrid → the fts-arm list (truncated to ENTITY_SEARCH_LIMIT) whenever the vector
+  //     arm degrades or has no hits (FTS-fallback, NOT []); [] with a log line only if
+  //     the fts arm ITSELF throws.
   return (async (): Promise<EntityRecord[]> => {
-    if (!vecAvailable()) return [];
-    try {
-      // The entity store is small, so over-fetch to the ceiling of the uniform rule
-      // (k = min(limit*4, 256) → 256): post-KNN active/confirmed/type filters can drop
-      // hits (EC 4/EC 6) and there is no per-call limit param to narrow against here.
-      const f32 = await embed(q); // EC 1: embedder unavailable → caught below
-      const hits = vecKnn(getDb(), 'entity_vec', f32, 256);
-      if (hits.length === 0) return [];
-
-      // Resolve entity ids against the in-memory graph (EC 4: skip unresolvable ids).
-      // entity_vec keys are TEXT cuid2 ids — no BigInt on this path.
-      const all = loadGraph();
-      const byId = new Map(all.map((e) => [e.id, e]));
-      let resolved = hits
-        .map((h) => byId.get(h.id as string))
-        .filter((e): e is EntityRecord => e !== undefined);
-
-      // Same active/filter logic as the fts arm.
-      resolved = resolved.filter((e) => {
-        if (type !== undefined && e.type !== type) return false;
-        if (unconfirmedOnly === true) {
-          return e.confirmed === false && e.superseded_by === null;
+    // ── Vector arm ──
+    let vectorHits: EntityRecord[] = [];
+    if (q.trim() !== '' && vecAvailable() && embeddingEnabled()) {
+      try {
+        // Uniform over-fetch rule (W3): k = min(limit*4, 256) with limit = ENTITY_SEARCH_LIMIT
+        // (→ 200); post-KNN active/confirmed/type filters can drop hits (EC 4/EC 6).
+        const k = Math.min(ENTITY_SEARCH_LIMIT * 4, 256);
+        const f32 = await embed(q); // EC 1: embedder init failure → caught below
+        const hits = vecKnn(getDb(), 'entity_vec', f32, k);
+        if (hits.length > 0) {
+          // Resolve entity ids against the in-memory graph (EC 4: skip unresolvable ids).
+          // entity_vec keys are TEXT cuid2 ids — no BigInt on this path.
+          const all = loadGraph();
+          const byId = new Map(all.map((e) => [e.id, e]));
+          vectorHits = hits
+            .map((h) => byId.get(h.id as string))
+            .filter((e): e is EntityRecord => e !== undefined)
+            // Same active/filter logic as the fts arm.
+            .filter((e) => {
+              if (type !== undefined && e.type !== type) return false;
+              if (unconfirmedOnly === true) {
+                return e.confirmed === false && e.superseded_by === null;
+              }
+              return e.superseded_by === null && e.valid_until === null;
+            })
+            .slice(0, ENTITY_SEARCH_LIMIT);
         }
-        return e.superseded_by === null && e.valid_until === null;
-      });
+      } catch (err) {
+        console.error('[MOT/graph] searchEntities vector arm degraded to []:', err);
+        vectorHits = [];
+      }
+    }
 
-      if (mode === 'vector') return resolved;
+    if (mode === 'vector') return vectorHits;
 
-      // Hybrid: merge KNN result with the in-memory substring result via RRF (FR 14).
-      const ftsResults = searchEntities(q, type, unconfirmedOnly); // binds sync overload
-      return rrfMerge<EntityRecord>([ftsResults, resolved], { limit: 20 });
+    // ── Hybrid: fts arm under its own guard ──
+    let ftsResults: EntityRecord[];
+    try {
+      ftsResults = searchEntities(q, type, unconfirmedOnly); // binds sync overload
     } catch (err) {
-      console.error('[MOT/graph] searchEntities vector/hybrid degraded to []:', err);
+      console.error('[MOT/graph] searchEntities hybrid fts arm degraded to []:', err);
       return [];
     }
+
+    // FTS-fallback: a degraded/empty vector arm yields the mode:'fts' result, truncated
+    // to the entity path's one limit (the sync arm is uncapped; hybrid output is bounded).
+    if (vectorHits.length === 0) return ftsResults.slice(0, ENTITY_SEARCH_LIMIT);
+
+    // Both arms live: merge via RRF (FR 14).
+    return rrfMerge<EntityRecord>([ftsResults, vectorHits], { limit: ENTITY_SEARCH_LIMIT });
   })();
 }
 
