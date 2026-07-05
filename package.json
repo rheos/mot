@@ -10,6 +10,7 @@
     "db:generate": "drizzle-kit generate:sqlite",
     "db:migrate": "tsx db/migrate.ts",
     "backfill": "tsx scripts/backfill-extraction.ts",
+    "backfill:embeddings": "tsx scripts/backfill-embeddings.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test tests/e2e",
