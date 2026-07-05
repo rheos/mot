@@ -345,9 +345,12 @@ describe.skipIf(SKIP)('Track 5 — vec retrieval', () => {
     async () => {
       // fastembed unit-normalizes MiniLM output, so L2-distance KNN ranks identically to cosine.
       // Three turns at clearly different semantic distance from the query prove the ranking holds.
-      const near = logTurn('ret-l2', 'user', 'I fixed the automobile motor problem in my garage yesterday.');
-      const mid = logTurn('ret-l2', 'user', 'The mechanic gave me a written quote for new brake pads.');
+      // Seeded in REVERSE of the expected ranking (far, mid, near) so insertion order AND id
+      // order both disagree with semantic order — a "rows in insertion/id order instead of KNN
+      // distance order" regression (e.g. dropping the post-IN re-sort) cannot stay green.
       const far = logTurn('ret-l2', 'user', 'She published a gentle poem about autumn leaves drifting down.');
+      const mid = logTurn('ret-l2', 'user', 'The mechanic gave me a written quote for new brake pads.');
+      const near = logTurn('ret-l2', 'user', 'I fixed the automobile motor problem in my garage yesterday.');
       await vi.waitFor(() => {
         expect(vecCount('conversation_vec', 'turn_id', near.id)).toBe(1);
         expect(vecCount('conversation_vec', 'turn_id', mid.id)).toBe(1);
