@@ -269,11 +269,26 @@ export async function main(argv: string[]): Promise<void> {
   }
 
   console.log(`[backfill-embeddings] real run (concurrency ${concurrency})`);
-  await runBackfillEmbeddings({ dryRun: false, concurrency });
+  const report = await runBackfillEmbeddings({ dryRun: false, concurrency });
+
+  // Partial failure must be visible to the shell: the SSH operator checks $?. Per-row errors
+  // are logged + counted (never fatal mid-run), so surface them here as a non-zero exit.
+  // ASSIGN process.exitCode — do NOT call process.exit(), which re-introduces the SIGABRT
+  // described below. Node drains the threadpool first, then exits 1.
+  const totalErrored = Object.values(report).reduce((n, c) => n + c.errored, 0);
+  if (totalErrored > 0) {
+    console.error(
+      `[backfill-embeddings] completed with ${totalErrored} errored row(s) — ` +
+        'see errors above; a re-run retries only the failed rows (skip-set).',
+    );
+    process.exitCode = 1;
+  }
+
   // DELIBERATELY no process.exit(0). fastembed loads onnxruntime-node, whose native
   // threadpool aborts (SIGABRT: "mutex lock failed") if process.exit() tears it down while
-  // its threads are live. Returning lets Node drain the idle threadpool and exit 0 cleanly.
-  // The gate paths above keep process.exit(1) because they run BEFORE any model load.
+  // its threads are live. Returning lets Node drain the idle threadpool and exit cleanly
+  // (0, or 1 via the exitCode assignment above). The gate paths keep process.exit(1)
+  // because they run BEFORE any model load.
 }
 
 // Run only when executed directly (tsx scripts/backfill-embeddings.ts), never on import — so
