@@ -9,8 +9,9 @@ import path from 'node:path';
 
 // ── Track 5 / Phase 1 — vec write-path integration tests ────────────────────────
 // Every OTHER integration test runs with MOT_EMBED_DISABLE=1 (vitest.config.ts), so no model
-// download and no vec write ever fires for them (AC 1). This file is the ONLY one that opts back
-// in to real embedding, and it proves every write path lands a row in its vec0 table plus the
+// download and no vec write ever fires for them (AC 1). This file is one of the THREE that opt
+// back in to real embedding (with vec-retrieval.test.ts and vec-backfill.test.ts). It proves
+// every write path lands a row in its vec0 table plus the
 // two prune paths (memory supersede, entity compaction) and the EMBED_INLINE=false deferred
 // sweep. It self-configures three things ordinary tests don't:
 //   (a) delete MOT_EMBED_DISABLE at module top — env is read lazily per call, so this opts in;

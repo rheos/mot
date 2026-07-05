@@ -19,7 +19,8 @@ import type { MemoryRow } from '../../lib/memory';
 //     the FTS-arm result — NOT [] — on all three paths; a vector-ONLY mode degrades to [];
 //   - the uniform empty-`q` guard (hybrid → fts-arm behavior, incl. memory recency fallback).
 //
-// Same opt-in harness as vec-write.test.ts (the ONLY other file that embeds for real):
+// Same opt-in harness as vec-write.test.ts and vec-backfill.test.ts (the three files that
+// embed for real):
 //   (a) delete MOT_EMBED_DISABLE at module top — env is read lazily per call, so this opts the
 //       whole file back in to real embedding; RESTORED to '1' in afterAll.
 //   (b) migrate_db() creates all tables incl. the four vec0 tables — getDb() loads the

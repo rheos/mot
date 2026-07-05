@@ -32,7 +32,11 @@ export async function register(): Promise<void> {
   if (process.env.MOT_EMBED_DISABLE !== '1') {
     try {
       const { embed } = await import('./lib/embedding');
-      embed('warmup').catch((err) => console.error('[MOT/embed] boot warmup failed:', err));
+      // The success line is load-bearing for the ops runbook: CLAUDE.md tells the operator
+      // to `journalctl -u mot.service | grep 'warmup'` after the first deploy.
+      embed('warmup')
+        .then(() => console.log('[MOT/embed] boot warmup complete'))
+        .catch((err) => console.error('[MOT/embed] boot warmup failed:', err));
     } catch (err) {
       console.error('[MOT/embed] boot warmup failed to load embedding module:', err);
     }

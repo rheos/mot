@@ -37,7 +37,8 @@ export function setupTempDb(label: string): string {
 /**
  * Like setupTempDb, but also loads the sqlite-vec extension into the seed connection and applies
  * every hand-written migration through 0007_vec.sql — so the four vec0 tables exist in the temp
- * DB. Use in vec-specific integration tests that need vec tables (backfill, write, retrieval).
+ * DB. Used by vec-backfill.test.ts (vec-write/vec-retrieval predate it and carry their own inline
+ * setups); prefer this helper for any NEW vec-specific integration test.
  *
  * Returns { dbPath, vecAvail }. When the extension can't load on this platform, vecAvail is false
  * and 0007_vec.sql is skipped (the CREATE VIRTUAL TABLE would throw); callers MUST guard with
