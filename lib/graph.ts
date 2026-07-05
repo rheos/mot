@@ -13,7 +13,9 @@ import path from 'node:path';
 import { createId } from '@paralleldrive/cuid2';
 import { nowIso } from './time';
 import { getDb } from '../db/client';
-import { indexAsync } from './vec';
+import { indexAsync, vecKnn, vecAvailable } from './vec';
+import { embed } from './embedding';
+import { rrfMerge } from './rrf';
 
 export interface EntityRecord {
   id: string;
@@ -218,33 +220,97 @@ export function getEntity(id: string): {
 }
 
 /**
- * Keyword search over the graph (FR 7). Case-insensitive substring match against the
- * label and the serialized properties.
+ * Keyword / semantic search over the graph (FR 7, FR 11).
+ *   - default (mode 'fts' / no mode): case-insensitive substring match against the label
+ *     and serialized properties — SYNC, returns EntityRecord[]. Existing ≤3-arg call sites
+ *     (extraction.ts dedup scan, mcp-tools.ts entity_search) bind here unchanged (AC-4).
+ *   - mode 'vector': sqlite-vec KNN over entity_vec, resolved back against loadGraph().
+ *   - mode 'hybrid': RRF-merge of the fts and vector result lists (FR 14).
+ * Active/confirmed filtering is identical across arms:
  *   - default: active records only (superseded_by === null && valid_until === null) — AC-5
  *   - unconfirmedOnly: confirmed === false && superseded_by === null — AC-5
  *   - type: additionally filter by entity type.
  */
+// Sync overload — ≤3-arg call sites (extraction.ts, mcp-tools.ts fts path) bind here.
 export function searchEntities(
   q: string,
   type?: EntityRecord['type'],
   unconfirmedOnly?: boolean,
-): EntityRecord[] {
-  const all = loadGraph();
-  const needle = q.toLowerCase();
+): EntityRecord[];
+// Async overload — 4-arg callers with mode:'vector'|'hybrid'.
+export function searchEntities(
+  q: string,
+  type: EntityRecord['type'] | undefined,
+  unconfirmedOnly: boolean | undefined,
+  mode: 'vector' | 'hybrid',
+): Promise<EntityRecord[]>;
+// Implementation.
+export function searchEntities(
+  q: string,
+  type?: EntityRecord['type'],
+  unconfirmedOnly?: boolean,
+  mode?: 'fts' | 'vector' | 'hybrid',
+): EntityRecord[] | Promise<EntityRecord[]> {
+  if (!mode || mode === 'fts') {
+    // Existing in-memory substring search — verbatim, do not change.
+    const all = loadGraph();
+    const needle = q.toLowerCase();
 
-  return all.filter((e) => {
-    const haystack =
-      e.label.toLowerCase() + ' ' + JSON.stringify(e.properties).toLowerCase();
-    if (!haystack.includes(needle)) return false;
+    return all.filter((e) => {
+      const haystack =
+        e.label.toLowerCase() + ' ' + JSON.stringify(e.properties).toLowerCase();
+      if (!haystack.includes(needle)) return false;
 
-    if (type !== undefined && e.type !== type) return false;
+      if (type !== undefined && e.type !== type) return false;
 
-    if (unconfirmedOnly === true) {
-      return e.confirmed === false && e.superseded_by === null;
+      if (unconfirmedOnly === true) {
+        return e.confirmed === false && e.superseded_by === null;
+      }
+      // Default: active records only.
+      return e.superseded_by === null && e.valid_until === null;
+    });
+  }
+
+  // Async vector/hybrid path. The ENTIRE body sits in one try/catch (45f16fe hardened
+  // shape) — this promise NEVER rejects. ANY failure (embed, KNN, graph fold, merge)
+  // degrades to [] with a log line, same as the EC-1 embedder-unavailable case.
+  return (async (): Promise<EntityRecord[]> => {
+    if (!vecAvailable()) return [];
+    try {
+      // The entity store is small, so over-fetch to the ceiling of the uniform rule
+      // (k = min(limit*4, 256) → 256): post-KNN active/confirmed/type filters can drop
+      // hits (EC 4/EC 6) and there is no per-call limit param to narrow against here.
+      const f32 = await embed(q); // EC 1: embedder unavailable → caught below
+      const hits = vecKnn(getDb(), 'entity_vec', f32, 256);
+      if (hits.length === 0) return [];
+
+      // Resolve entity ids against the in-memory graph (EC 4: skip unresolvable ids).
+      // entity_vec keys are TEXT cuid2 ids — no BigInt on this path.
+      const all = loadGraph();
+      const byId = new Map(all.map((e) => [e.id, e]));
+      let resolved = hits
+        .map((h) => byId.get(h.id as string))
+        .filter((e): e is EntityRecord => e !== undefined);
+
+      // Same active/filter logic as the fts arm.
+      resolved = resolved.filter((e) => {
+        if (type !== undefined && e.type !== type) return false;
+        if (unconfirmedOnly === true) {
+          return e.confirmed === false && e.superseded_by === null;
+        }
+        return e.superseded_by === null && e.valid_until === null;
+      });
+
+      if (mode === 'vector') return resolved;
+
+      // Hybrid: merge KNN result with the in-memory substring result via RRF (FR 14).
+      const ftsResults = searchEntities(q, type, unconfirmedOnly); // binds sync overload
+      return rrfMerge<EntityRecord>([ftsResults, resolved], { limit: 20 });
+    } catch (err) {
+      console.error('[MOT/graph] searchEntities vector/hybrid degraded to []:', err);
+      return [];
     }
-    // Default: active records only.
-    return e.superseded_by === null && e.valid_until === null;
-  });
+  })();
 }
 
 /**

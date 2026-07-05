@@ -6,8 +6,9 @@
 import { getDb } from '../db/client';
 import { nowIso } from './time';
 import { ftsPhrase } from './fts';
-import { indexAsync, vecDelete, vecAvailable } from './vec';
-import { embeddingEnabled } from './embedding';
+import { indexAsync, vecDelete, vecAvailable, vecKnn } from './vec';
+import { embeddingEnabled, embed } from './embedding';
+import { rrfMerge } from './rrf';
 
 export type MemoryType = 'fact' | 'preference' | 'deadline' | 'person';
 
@@ -311,4 +312,73 @@ export function searchActiveMemory(q: string, chatId?: string, limit = 20): Memo
        ORDER BY rank LIMIT ?`,
     )
     .all(phrase, limit) as MemoryRow[];
+}
+
+// sqlite-vec KNN search over active memory items (Track-5 semantic retrieval, FR 11/12).
+// searchActiveMemory keeps its sync FTS signature untouched; this is the separate async
+// vector capability. The ENTIRE body after the vecAvailable() gate sits in one try/catch
+// (45f16fe hardened shape) — the returned promise NEVER rejects; any failure (embed, KNN,
+// hydration, sort) degrades to [] with a log line, matching the EC-1 embedder-unavailable
+// case. Active-only filter (conflict_flag = 0 AND superseded_by IS NULL) is applied post-KNN
+// in SQL — same settled-truth predicate as getActiveMemory / searchActiveMemory.
+export async function searchActiveMemoryVector(
+  q: string,
+  chatId?: string,
+  limit = 20,
+): Promise<MemoryRow[]> {
+  if (!vecAvailable()) return [];
+  try {
+    // W3 uniform over-fetch: the active-only filter can drop hits, so fetch
+    // k = min(limit*4, 256) and truncate to limit after filtering.
+    const k = Math.min(limit * 4, 256);
+    const f32 = await embed(q); // EC 1: embedder unavailable → caught below
+    const hits = vecKnn(getDb(), 'memory_items_vec', f32, k);
+    if (hits.length === 0) return [];
+
+    const ids = hits.map((h) => h.id as number);
+    const placeholders = ids.map(() => '?').join(',');
+    let rows: MemoryRow[];
+    if (chatId !== undefined) {
+      rows = getDb()
+        .prepare(
+          `SELECT * FROM memory_items
+           WHERE id IN (${placeholders})
+             AND conflict_flag = 0 AND superseded_by IS NULL AND chat_id = ?`,
+        )
+        .all(...ids, chatId) as MemoryRow[];
+    } else {
+      rows = getDb()
+        .prepare(
+          `SELECT * FROM memory_items
+           WHERE id IN (${placeholders})
+             AND conflict_flag = 0 AND superseded_by IS NULL`,
+        )
+        .all(...ids) as MemoryRow[];
+    }
+
+    // Re-sort by KNN distance order (the IN clause returns rows in arbitrary order).
+    const rankMap = new Map(hits.map((h, i) => [h.id as number, i]));
+    rows.sort((a, b) => (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0));
+    return rows.slice(0, limit);
+  } catch (err) {
+    console.error('[MOT/memory] searchActiveMemoryVector degraded to []:', err);
+    return [];
+  }
+}
+
+// Hybrid retrieval over active memory: RRF-merge (FR 14) of the FTS list and the vector
+// list. The vector arm never rejects (hardened above); the FTS arm reuses the existing
+// sync path (searchActiveMemory for a real query, getActiveMemory for empty q).
+export async function searchActiveMemoryHybrid(
+  q: string,
+  chatId?: string,
+  limit = 20,
+): Promise<MemoryRow[]> {
+  const [vectorResults, ftsResults] = await Promise.all([
+    searchActiveMemoryVector(q, chatId, limit),
+    Promise.resolve(
+      q.trim() !== '' ? searchActiveMemory(q, chatId, limit) : getActiveMemory(chatId, limit),
+    ),
+  ]);
+  return rrfMerge<MemoryRow>([ftsResults, vectorResults], { limit });
 }
