@@ -537,17 +537,17 @@ describe('GET /api/memory route (AC-14)', () => {
 });
 
 // ── AC-15: memory_recent schema ──────────────────────────────────────────────
-// Phase 5 (Recallatron) deliberately extends memory_recent with an FTS `q` arm. The schema
-// is now {chat_id?, limit?, q?} — still no filter/type params (those are separate Track-2
-// tools), but q is the sanctioned keyword search over active memory items.
+// Phase 5 (Recallatron) added the FTS `q` arm. Track 5 (semantic retrieval) then added the
+// `mode` arm ('fts' | 'vector' | 'hybrid'). The schema is now {chat_id?, limit?, q?, mode?} —
+// still no filter/type params (those are separate Track-2 tools).
 
-describe('memory_recent schema {chat_id?, limit?, q?} (AC-15)', () => {
-  it('inputSchema.properties is chat_id, limit, q — no filter or type', () => {
+describe('memory_recent schema {chat_id?, limit?, q?, mode?} (AC-15)', () => {
+  it('inputSchema.properties is chat_id, limit, q, mode — no filter or type', () => {
     const tools = listMcpTools();
     const tool = tools.find((t) => t.name === 'memory_recent');
     expect(tool).toBeDefined();
     const props = Object.keys((tool!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
-    expect(props.sort()).toEqual(['chat_id', 'limit', 'q'].sort());
+    expect(props.sort()).toEqual(['chat_id', 'limit', 'q', 'mode'].sort());
     expect(props).not.toContain('filter');
     expect(props).not.toContain('type');
   });
