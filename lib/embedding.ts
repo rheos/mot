@@ -18,7 +18,12 @@ let _initPromise: Promise<FlagEmbedding> | null = null;
 function getModel(): Promise<FlagEmbedding> {
   if (_initPromise === null) {
     _initPromise = FlagEmbedding.init({
-      model: EmbeddingModel.AllMiniLML6V2, // 384-dim, unit-normalized
+      // all-MiniLM-L6-v2 emits UNIT-NORMALIZED 384-dim vectors. The vec0 tables use the
+      // default L2 distance metric; L2 ranking == cosine ranking ONLY for normalized
+      // vectors. If you swap this model for one that does not normalize, KNN ordering
+      // silently corrupts — you must recut the vec0 tables with distance_metric=cosine
+      // (new migration + full re-embed).
+      model: EmbeddingModel.AllMiniLML6V2,
       // fastembed's own default drops an untracked local_cache/ in cwd; .model-cache is
       // gitignored + deploy-excluded.
       cacheDir: process.env.EMBEDDING_CACHE_DIR ?? './.model-cache',
