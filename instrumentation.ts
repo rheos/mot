@@ -25,8 +25,16 @@ export async function register(): Promise<void> {
   scheduleNightly();
   // Boot warm-up (W4): trigger the ~90MB model download at service start so the first
   // user turn never pays the download cost. Non-blocking — boot never waits on this.
+  // The try/catch covers the dynamic import too: a module-eval throw (e.g. a broken
+  // native dep on a degraded box) logs and continues, never fails boot. The prod
+  // fail-fast path for the vec EXTENSION lives in getDb()/loadVecExtension — that one
+  // is intentionally NOT caught here.
   if (process.env.MOT_EMBED_DISABLE !== '1') {
-    const { embed } = await import('./lib/embedding');
-    embed('warmup').catch((err) => console.error('[MOT/embed] boot warmup failed:', err));
+    try {
+      const { embed } = await import('./lib/embedding');
+      embed('warmup').catch((err) => console.error('[MOT/embed] boot warmup failed:', err));
+    } catch (err) {
+      console.error('[MOT/embed] boot warmup failed to load embedding module:', err);
+    }
   }
 }

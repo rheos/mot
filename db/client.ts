@@ -56,8 +56,10 @@ function applyHandWrittenMigrations(db: DB, migrationsFolder: string): void {
 
   for (const name of HAND_WRITTEN_MIGRATIONS) {
     if (applied.has(name)) continue;
-    // Skip the vec migration if the extension didn't load — a no-vec box still boots
-    // FTS/tickets (EC 1 / FR 18), it just has no semantic tables.
+    // Skip the vec migration if the extension didn't load. This is the dev/test degrade
+    // path ONLY (EC 1 / FR 18): the box still boots FTS/tickets, just with no semantic
+    // tables. In production loadVecExtension re-throws at getDb() and boot fails fast
+    // (FR 1, by design), so this guard is never reached there.
     if (name === '0007_vec.sql' && !vecAvailable()) {
       console.warn('[MOT/vec] skipping 0007_vec.sql — sqlite-vec extension not available');
       continue;
