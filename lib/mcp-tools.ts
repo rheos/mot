@@ -5,7 +5,7 @@ import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory, searchActiveMemoryVector, searchActiveMemoryHybrid } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
-import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, type EntityRecord } from './graph';
+import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, appendRelate, confirmRelate, rejectRelate, isRelType, REL_VOCABULARY, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
 import { memoryContext } from './memory-context';
 import { compactGraph } from './graph-compact';
@@ -425,6 +425,53 @@ export function listMcpTools(): ToolDef[] {
       },
     },
     {
+      name: 'entity_relate',
+      description:
+        'Assert a directed relation between two entities. `rel` must be one of the 10 ' +
+        'closed-vocabulary verbs (' + REL_VOCABULARY.join(', ') + '). Manual assertions are ' +
+        'confirmed:true by default. Returns the appended RelatePatch or a typed error.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          from: { type: 'string', description: 'Subject entity id.' },
+          rel: { type: 'string', description: 'Relation verb (closed vocabulary).' },
+          to: { type: 'string', description: 'Object entity id.' },
+          confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Defaults to 1.0.' },
+        },
+        required: ['from', 'rel', 'to'],
+      },
+    },
+    {
+      name: 'entity_relate_confirm',
+      description:
+        'Confirm an unconfirmed candidate edge, marking it trusted for BFS traversal. ' +
+        'Returns the now-confirmed RelatePatch or a typed error.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          from: { type: 'string' },
+          rel: { type: 'string' },
+          to: { type: 'string' },
+        },
+        required: ['from', 'rel', 'to'],
+      },
+    },
+    {
+      name: 'entity_relate_reject',
+      description:
+        'Reject (expire) a candidate edge. A rejected edge is excluded from BFS traversal. ' +
+        'Returns the now-expired RelatePatch or a typed error.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          from: { type: 'string' },
+          rel: { type: 'string' },
+          to: { type: 'string' },
+        },
+        required: ['from', 'rel', 'to'],
+      },
+    },
+    {
       name: 'procedural_notes_list',
       description: 'List procedural notes. Default: confirmed active notes grouped by category.',
       inputSchema: {
@@ -546,6 +593,9 @@ export async function callMcpTool(
     procedural_note_confirm: [{ name: 'id', type: 'integer' }],
     entity_confirm:          [{ name: 'id', type: 'string' }],
     entity_supersede:        [{ name: 'id', type: 'string' }, { name: 'superseded_by_id', type: 'string' }],
+    entity_relate:           [{ name: 'from', type: 'string' }, { name: 'rel', type: 'string' }, { name: 'to', type: 'string' }],
+    entity_relate_confirm:   [{ name: 'from', type: 'string' }, { name: 'rel', type: 'string' }, { name: 'to', type: 'string' }],
+    entity_relate_reject:    [{ name: 'from', type: 'string' }, { name: 'rel', type: 'string' }, { name: 'to', type: 'string' }],
   };
   const specs = ARG_SPECS[name];
   if (specs) {
@@ -732,6 +782,27 @@ export async function callMcpTool(
       appendSupersede(id, supersededById);
       return text({ ok: true, id, superseded_by_id: supersededById });
     }
+
+    // ── Track-6 edge tools (AC-12): never throw — typed { error } on every sad path. ──
+    case 'entity_relate': {
+      const from = args.from as string;
+      const rel = args.rel as string;
+      const to = args.to as string;
+      if (from === to) return text({ error: 'self_relate' }); // EC3/EC11
+      if (!isRelType(rel)) return text({ error: 'invalid_rel' });
+      if (getEntity(from) === null) return text({ error: 'from_not_found' });
+      if (getEntity(to) === null) return text({ error: 'to_not_found' });
+      const confidence = typeof args.confidence === 'number' ? args.confidence : 1.0;
+      // A5/FR11 — a manual assertion is confirmed:true, source:'manual'.
+      const patch = appendRelate(from, rel, to, confidence, 'manual', true);
+      return text(patch);
+    }
+
+    case 'entity_relate_confirm':
+      return text(confirmRelate(args.from as string, args.rel as string, args.to as string));
+
+    case 'entity_relate_reject':
+      return text(rejectRelate(args.from as string, args.rel as string, args.to as string));
 
     case 'procedural_notes_list':
       return text(listNotes(

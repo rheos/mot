@@ -23,7 +23,6 @@ export interface BotEntityDraftItem {
   type: 'Person' | 'Project' | 'Deadline' | 'Preference' | 'Fact';
   label: string;
   properties: {
-    relations?: { rel: string; target_id: string }[];
     [k: string]: unknown;
   };
   confidence: number; // 0.0–1.0; compared at >= 0.85 threshold (EC-5)

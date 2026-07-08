@@ -156,7 +156,7 @@ describe('lib/graph-compact — prunePendingEntities', () => {
         confirmed: false,
         confidence: 0.7,
         valid_from: daysAgoIso(31),
-        properties: { relations: [{ rel: 'knows', target_id: 'someone' }] },
+        properties: { relations: [{ rel: 'knows', target_id: 'someone', confirmed: true }] },
       }),
     );
 
