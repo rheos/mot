@@ -22,7 +22,11 @@ export interface EntityRecord {
   type: 'Person' | 'Project' | 'Deadline' | 'Preference' | 'Fact';
   label: string;
   properties: {
-    relations?: { rel: string; target_id: string }[];
+    // OQ-A (Track 6): `confirmed` is REQUIRED so the BFS can filter unconfirmed edges in-place
+    // and the browser can show a Confirm button without a second return channel. The fold
+    // (attachRelations) rebuilds this array wholesale from relate patches — any value stored
+    // inline on an entity record is ignored (W3).
+    relations?: { rel: string; target_id: string; confirmed: boolean }[];
     probable_duplicate_of?: string[];
     [k: string]: unknown;
   };
@@ -45,6 +49,43 @@ export interface ConfirmPatch {
   op: 'confirm';
   id: string;   // entity id being confirmed in place — id does NOT change (FR-1)
   ts: string;   // nowIso()
+}
+
+// ── Track 6: entity graph edges ───────────────────────────────────────────────
+// Three more JSONL shapes on the same append-only file, keyed on the (from, rel, to)
+// natural key (OQ-2). `relate` establishes/refreshes a directed edge; `confirm_relate`
+// is a human affirmation; `unrelate` is a human reject (expiry). resolveEdges folds all
+// three into each entity's effective properties.relations[] (FR4–FR8).
+export interface RelatePatch {
+  op: 'relate';
+  from: string;           // entity cuid2 id
+  rel: string;            // member of REL_VOCABULARY
+  to: string;             // entity cuid2 id
+  confidence: number;
+  source: string;         // "session:<id>" | "manual"
+  valid_from: string;     // ISO datetime
+  valid_until: string | null;
+  confirmed: boolean;
+  ts: string;
+}
+export interface ConfirmRelatePatch {
+  op: 'confirm_relate';
+  from: string; rel: string; to: string; ts: string;
+}
+export interface UnrelatePatch {
+  op: 'unrelate';
+  from: string; rel: string; to: string; ts: string;
+}
+
+// The closed relation vocabulary (OQ-3): 10 verbs, each with a fixed subject→object
+// direction (see EXTRACTION_PROMPT_GUIDANCE). Widening later = append to this const.
+export const REL_VOCABULARY = [
+  'child_of', 'works_on', 'deadline_for', 'prefers', 'attends', 'belongs_to',
+  'owns', 'hosted_on', 'points_to', 'depends_on',
+] as const;
+export type RelType = typeof REL_VOCABULARY[number];
+export function isRelType(s: string): s is RelType {
+  return (REL_VOCABULARY as readonly string[]).includes(s);
 }
 
 // Server-only live data path. Read lazily (not at module load) so tests can point
@@ -104,6 +145,56 @@ export function appendEntityConfirm(id: string): void {
   fs.appendFileSync(file, JSON.stringify(patch) + '\n');
 }
 
+/**
+ * Append a `relate` patch establishing/refreshing a directed edge (FR5). Single-syscall
+ * append, mirroring appendEntity/appendSupersede. `valid_from = nowIso()`, `valid_until`
+ * is ALWAYS null on write — expiry is expressed only by an `unrelate` op, never by writing
+ * a pre-expired relate (the fold owns liveness). Does NOT touch entity_vec (edges aren't
+ * embedded — Track-5 synergy is out of scope). Returns the patch.
+ */
+export function appendRelate(
+  from: string,
+  rel: string,
+  to: string,
+  confidence: number,
+  source: string,
+  confirmed: boolean,
+): RelatePatch {
+  const now = nowIso();
+  const patch: RelatePatch = {
+    op: 'relate',
+    from,
+    rel,
+    to,
+    confidence,
+    source,
+    valid_from: now,
+    valid_until: null,
+    confirmed,
+    ts: now,
+  };
+  const file = graphPath();
+  ensureDir(file);
+  fs.appendFileSync(file, JSON.stringify(patch) + '\n');
+  return patch;
+}
+
+/** Append a `confirm_relate` patch — a human affirmation of the edge (FR12). */
+export function appendConfirmRelate(from: string, rel: string, to: string): void {
+  const patch: ConfirmRelatePatch = { op: 'confirm_relate', from, rel, to, ts: nowIso() };
+  const file = graphPath();
+  ensureDir(file);
+  fs.appendFileSync(file, JSON.stringify(patch) + '\n');
+}
+
+/** Append an `unrelate` patch — a human reject / expiry of the edge (FR16). */
+export function appendUnrelate(from: string, rel: string, to: string): void {
+  const patch: UnrelatePatch = { op: 'unrelate', from, rel, to, ts: nowIso() };
+  const file = graphPath();
+  ensureDir(file);
+  fs.appendFileSync(file, JSON.stringify(patch) + '\n');
+}
+
 // A parsed line is an entity record, a supersession patch, or a confirmation patch.
 function isSupersedePatch(rec: unknown): rec is SupersessionPatch {
   return (
@@ -119,6 +210,226 @@ function isConfirmPatch(rec: unknown): rec is ConfirmPatch {
     rec !== null &&
     (rec as { op?: unknown }).op === 'confirm'
   );
+}
+
+// Track 6 edge patch discriminators — same shape as isSupersedePatch / isConfirmPatch.
+function isRelatePatch(rec: unknown): rec is RelatePatch {
+  return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'relate';
+}
+function isConfirmRelatePatch(rec: unknown): rec is ConfirmRelatePatch {
+  return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'confirm_relate';
+}
+function isUnrelatePatch(rec: unknown): rec is UnrelatePatch {
+  return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'unrelate';
+}
+
+/**
+ * The one shared edge-semantics fold (FR6, the correctness core of Track 6). Groups every
+ * patch by its (from, rel, to) natural key and, for each triple with ≥1 `relate`, runs a
+ * SINGLE `ts`-ordered fold over relate + confirm_relate + unrelate with these per-field
+ * merge rules:
+ *   - `confirmed` — a ONE-WAY LATCH. Starts false; set true by any `confirm_relate` OR any
+ *     `relate` whose own `confirmed === true` (a manual entity_relate or a compacted-confirmed
+ *     edge line). Once true, NEVER cleared by a later automated `relate(confirmed:false)`.
+ *   - liveness (`valid_until`) — HUMAN-AUTHORITATIVE. Track expiredAt (starts null): `unrelate`
+ *     sets it to the patch ts (human reject); a human affirmation (`confirm_relate` or a
+ *     `relate` with confirmed:true) clears it to null; an automated `relate(confirmed:false)`
+ *     never touches it.
+ *   - `confidence` / `source` / `valid_from` / `ts` — last-write from the highest-`ts` `relate`.
+ * A triple seen only in a confirm_relate/unrelate with no establishing relate is dropped
+ * (no base to attach to). Returns one resolved patch per triple, BOTH live (valid_until:null)
+ * and expired — callers filter on valid_until.
+ */
+export function resolveEdges(
+  relates: RelatePatch[],
+  confirmRelates: ConfirmRelatePatch[],
+  unrelates: UnrelatePatch[],
+): RelatePatch[] {
+  const tripleKey = (from: string, rel: string, to: string): string =>
+    `${from}|${rel}|${to}`;
+
+  type StreamEvent =
+    | { kind: 'relate'; ts: string; patch: RelatePatch }
+    | { kind: 'confirm_relate'; ts: string }
+    | { kind: 'unrelate'; ts: string };
+  interface Group {
+    from: string;
+    rel: string;
+    to: string;
+    hasRelate: boolean;
+    stream: StreamEvent[];
+  }
+
+  const groups = new Map<string, Group>();
+  const groupFor = (from: string, rel: string, to: string): Group => {
+    const k = tripleKey(from, rel, to);
+    let g = groups.get(k);
+    if (!g) {
+      g = { from, rel, to, hasRelate: false, stream: [] };
+      groups.set(k, g);
+    }
+    return g;
+  };
+
+  // Insertion order: relates, then confirm_relates, then unrelates. A stable sort by `ts`
+  // preserves this on equal-`ts` ties (file order within a type; relate→confirm→unrelate
+  // across types).
+  for (const p of relates) {
+    const g = groupFor(p.from, p.rel, p.to);
+    g.hasRelate = true;
+    g.stream.push({ kind: 'relate', ts: p.ts, patch: p });
+  }
+  for (const p of confirmRelates) {
+    groupFor(p.from, p.rel, p.to).stream.push({ kind: 'confirm_relate', ts: p.ts });
+  }
+  for (const p of unrelates) {
+    groupFor(p.from, p.rel, p.to).stream.push({ kind: 'unrelate', ts: p.ts });
+  }
+
+  const resolved: RelatePatch[] = [];
+  for (const g of groups.values()) {
+    if (!g.hasRelate) continue; // no base relate → the triple never existed
+
+    // Array.prototype.sort is stable (ES2019+), so equal-`ts` events keep insertion order.
+    const stream = [...g.stream].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+
+    let confirmed = false; // one-way latch
+    let expiredAt: string | null = null; // liveness — moved only by human actions
+    // Candidate fields, last-write-by-`ts` from the highest-`ts` relate.
+    let confidence = 0;
+    let source = '';
+    let validFrom = '';
+    let latestTs = '';
+
+    for (const ev of stream) {
+      if (ev.kind === 'relate') {
+        const r = ev.patch;
+        confidence = r.confidence;
+        source = r.source;
+        validFrom = r.valid_from;
+        latestTs = r.ts;
+        if (r.confirmed === true) {
+          confirmed = true; // human affirmation via manual / compacted-confirmed relate
+          expiredAt = null; // human re-asserts liveness
+        }
+        // an automated relate(confirmed:false) refreshes candidate fields only
+      } else if (ev.kind === 'confirm_relate') {
+        confirmed = true; // latch
+        expiredAt = null; // human re-asserts liveness
+      } else {
+        expiredAt = ev.ts; // unrelate — human reject
+      }
+    }
+
+    resolved.push({
+      op: 'relate',
+      from: g.from,
+      rel: g.rel,
+      to: g.to,
+      confidence,
+      source,
+      valid_from: validFrom,
+      valid_until: expiredAt,
+      confirmed,
+      ts: latestTs,
+    });
+  }
+
+  return resolved;
+}
+
+/**
+ * Rebuild each entity's effective properties.relations[] from resolved edges (FR6, W3).
+ * FIRST clears properties.relations = [] on EVERY entity in the map (wholesale replace — any
+ * stale value stored inline on an entity record is dropped, so it can never leak a phantom
+ * edge that renders a Confirm button which can never stick). THEN pushes each LIVE edge
+ * (valid_until === null) whose `from` is present in the map onto that entity's array.
+ * Unknown `from` is a no-op (EC6); unknown `to` is kept as a dangling target.
+ */
+export function attachRelations(entities: Map<string, EntityRecord>, edges: RelatePatch[]): void {
+  for (const e of entities.values()) {
+    e.properties.relations = [];
+  }
+  for (const edge of edges) {
+    if (edge.valid_until !== null) continue; // expired edges don't surface
+    const from = entities.get(edge.from);
+    if (!from) continue; // unknown from (EC6) — no-op
+    const rels = from.properties.relations ?? (from.properties.relations = []);
+    rels.push({ rel: edge.rel, target_id: edge.to, confirmed: edge.confirmed });
+  }
+}
+
+/**
+ * Single-triple resolver shared by confirmRelate / rejectRelate (and the browser route).
+ * Reads the live JSONL, collects every patch for the one (from, rel, to) triple, folds via
+ * resolveEdges, and returns the resolved patch (live OR expired) or null if the triple has
+ * no `relate` patch.
+ */
+export function resolveEdge(from: string, rel: string, to: string): RelatePatch | null {
+  const file = graphPath();
+  if (!fs.existsSync(file)) return null;
+
+  const raw = fs.readFileSync(file, 'utf8');
+  const relates: RelatePatch[] = [];
+  const confirmRelates: ConfirmRelatePatch[] = [];
+  const unrelates: UnrelatePatch[] = [];
+
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isRelatePatch(parsed) && parsed.from === from && parsed.rel === rel && parsed.to === to) {
+      relates.push(parsed);
+    } else if (
+      isConfirmRelatePatch(parsed) && parsed.from === from && parsed.rel === rel && parsed.to === to
+    ) {
+      confirmRelates.push(parsed);
+    } else if (
+      isUnrelatePatch(parsed) && parsed.from === from && parsed.rel === rel && parsed.to === to
+    ) {
+      unrelates.push(parsed);
+    }
+  }
+
+  return resolveEdges(relates, confirmRelates, unrelates)[0] ?? null;
+}
+
+/**
+ * Confirm an unconfirmed candidate edge (FR12). Typed-result, never throws (AC-12).
+ * not_found → the triple has no relate patch; already_confirmed → EC8.
+ */
+export function confirmRelate(
+  from: string,
+  rel: string,
+  to: string,
+): RelatePatch | { error: string } {
+  const e = resolveEdge(from, rel, to);
+  if (!e) return { error: 'not_found' };
+  if (e.confirmed === true) return { error: 'already_confirmed' };
+  appendConfirmRelate(from, rel, to);
+  // The relate patch still exists, so the re-resolve is guaranteed non-null.
+  return resolveEdge(from, rel, to)!;
+}
+
+/**
+ * Reject (expire) a candidate edge (FR16 / W4). Typed-result, never throws (AC-12).
+ * not_found → the triple has no relate patch; already_rejected → the edge is already expired.
+ */
+export function rejectRelate(
+  from: string,
+  rel: string,
+  to: string,
+): RelatePatch | { error: string } {
+  const e = resolveEdge(from, rel, to);
+  if (!e) return { error: 'not_found' };
+  if (e.valid_until !== null) return { error: 'already_rejected' };
+  appendUnrelate(from, rel, to);
+  // The relate patch still exists, so the re-resolve is guaranteed non-null.
+  return resolveEdge(from, rel, to)!;
 }
 
 /**
@@ -141,6 +452,9 @@ export function loadGraph(): EntityRecord[] {
   const entities = new Map<string, EntityRecord>();
   const patches: SupersessionPatch[] = [];
   const confirmPatches: ConfirmPatch[] = [];
+  const relateBucket: RelatePatch[] = [];
+  const confirmRelateBucket: ConfirmRelatePatch[] = [];
+  const unrelateBucket: UnrelatePatch[] = [];
 
   const lines = raw.split('\n');
   let offset = 0; // byte offset of the current line's start, for the skip log
@@ -161,7 +475,14 @@ export function loadGraph(): EntityRecord[] {
       patches.push(parsed);
     } else if (isConfirmPatch(parsed)) {
       confirmPatches.push(parsed);
+    } else if (isRelatePatch(parsed)) {
+      relateBucket.push(parsed);
+    } else if (isConfirmRelatePatch(parsed)) {
+      confirmRelateBucket.push(parsed);
+    } else if (isUnrelatePatch(parsed)) {
+      unrelateBucket.push(parsed);
     } else {
+      // An id-less patch line MUST NOT reach here — it would set a garbage `undefined` key.
       const rec = parsed as EntityRecord;
       entities.set(rec.id, rec);
     }
@@ -179,6 +500,11 @@ export function loadGraph(): EntityRecord[] {
     const target = entities.get(cp.id);
     if (target) target.confirmed = true;
   }
+
+  // Fold relate patches (Track 6): rebuild every entity's effective properties.relations[]
+  // from the resolved edges. Wholesale replace — inline values on entity records are ignored.
+  const resolvedEdges = resolveEdges(relateBucket, confirmRelateBucket, unrelateBucket);
+  attachRelations(entities, resolvedEdges);
 
   return [...entities.values()];
 }
@@ -367,6 +693,7 @@ export function relatedEntities(id: string, rel?: string, hops = 1): EntityRecor
     for (const node of frontier) {
       const edges = node.properties.relations ?? [];
       for (const edge of edges) {
+        if (edge.confirmed !== true) continue; // FR7 — confirmed-only BFS (Track 6)
         if (rel !== undefined && edge.rel !== rel) continue;
         if (visited.has(edge.target_id)) continue;
         const target = byId.get(edge.target_id);

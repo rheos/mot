@@ -61,6 +61,7 @@ for (const f of [
   '0004_topic_threads.sql',
   '0005_procedural_notes.sql',
   '0006_memory_fts.sql',
+  '0008_relation_draft.sql', // Track 6 — adds session_digest.relation_draft (no vec dep)
 ]) {
   seed.exec(fs.readFileSync(path.join(migrationsFolder, f), 'utf8'));
 }

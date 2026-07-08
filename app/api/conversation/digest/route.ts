@@ -37,12 +37,17 @@ export async function POST(req: Request): Promise<Response> {
       topics:         typeof b.topics === 'string' ? b.topics : null,
       entity_draft:   typeof b.entity_draft === 'string' ? b.entity_draft : null,
       procedural_raw: typeof b.procedural_raw === 'string' ? b.procedural_raw : null,
+      relation_draft: typeof b.relation_draft === 'string' ? b.relation_draft : null,
       parse_error:    b.parse_error === true,
     });
 
     // Recallatron extraction pass — fire-and-forget after digest persisted (A-6, R3).
     // Extraction failure must NEVER propagate to the caller — the digest row is already written.
-    if (row.parse_error === 0 && (row.entity_draft !== null || row.procedural_raw !== null)) {
+    // relation_draft is part of the guard (FR10): a relation-only digest must still fire extraction.
+    if (
+      row.parse_error === 0 &&
+      (row.entity_draft !== null || row.procedural_raw !== null || row.relation_draft !== null)
+    ) {
       runExtraction(row).catch((e: unknown) => {
         console.error('[MOT] runExtraction error:', e);
       });

@@ -30,7 +30,16 @@ afterEach(() => {
 const { compactGraph, prunePendingEntities, graphEntitySources } = await import(
   '../../lib/graph-compact'
 );
-const { appendEntity, appendSupersede, searchEntities } = await import('../../lib/graph');
+const {
+  appendEntity,
+  appendSupersede,
+  searchEntities,
+  appendRelate,
+  appendConfirmRelate,
+  appendUnrelate,
+  loadGraph,
+  relatedEntities,
+} = await import('../../lib/graph');
 
 type EntityInput = Parameters<typeof appendEntity>[0];
 
@@ -150,15 +159,19 @@ describe('lib/graph-compact — prunePendingEntities', () => {
     const highConf = appendEntity(
       entityInput({ label: 'high conf', confirmed: false, confidence: 0.95, valid_from: daysAgoIso(31) }),
     );
+    // Phase 3: outgoing relations now live ONLY as relate patches (W3 wholesale-clear drops any
+    // inline properties.relations with no backing patch). So the "has-relations" protection comes
+    // from a real relate patch — attachRelations surfaces it, and the prune guard spares the entity.
     const related = appendEntity(
       entityInput({
         label: 'has relations',
         confirmed: false,
         confidence: 0.7,
         valid_from: daysAgoIso(31),
-        properties: { relations: [{ rel: 'knows', target_id: 'someone' }] },
       }),
     );
+    const relatedTarget = appendEntity(entityInput({ label: 'relation target' }));
+    appendRelate(related.id, 'works_on', relatedTarget.id, 0.7, 'session:s1', false);
 
     prunePendingEntities();
 
@@ -282,5 +295,124 @@ describe('lib/graph-compact — graphEntitySources (GAP #2)', () => {
 
     const sources = graphEntitySources(graphFile);
     expect([...sources].sort()).toEqual(['session:only-1', 'session:only-2']);
+  });
+});
+
+// ── Track 6 Phase 3 — edge-aware compaction + prune-guard ──────────────────────────────────────
+// foldRecords now folds the (from, rel, to) edge patches (via the shared resolveEdges/attachRelations
+// from lib/graph), and compactGraph re-emits the resolved LIVE edges as relate lines. These tests
+// pin: prunePendingEntities spares an entity whose only outgoing edge is a relate patch (FR14/AC-11);
+// compactGraph drops expired + orphaned-from edges and keeps live confirmed ones (AC-10/EC6); and the
+// post-compaction confirmed edge survives a later automated relate (blocker path b / AC-15).
+describe('lib/graph-compact — Track 6 Phase 3 edge fold', () => {
+  // Read the compacted/live JSONL back as raw records (entity lines + edge lines).
+  function readLines(): Array<Record<string, unknown>> {
+    return fs
+      .readFileSync(graphFile, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+  }
+
+  it('AC-10: compactGraph drops expired + orphaned edges, keeps the live confirmed edge as a relate line', async () => {
+    const a = appendEntity(entityInput({ label: 'A' }));
+    const b = appendEntity(entityInput({ label: 'B' }));
+    const c = appendEntity(entityInput({ label: 'C' }));
+
+    // Live confirmed edge A → B.
+    appendRelate(a.id, 'child_of', b.id, 1.0, 'manual', true);
+    // Expired edge A → C: a relate then an unrelate collapses to valid_until !== null.
+    appendRelate(a.id, 'works_on', c.id, 0.9, 'session:s1', false);
+    appendUnrelate(a.id, 'works_on', c.id);
+
+    await compactGraph(graphFile);
+
+    const lines = readLines();
+    const edgeLines = lines.filter((r) => r.op === 'relate');
+    // Exactly one edge line survives: the live confirmed A → B.
+    expect(edgeLines).toHaveLength(1);
+    expect(edgeLines[0]).toMatchObject({
+      op: 'relate',
+      from: a.id,
+      rel: 'child_of',
+      to: b.id,
+      confirmed: true,
+      valid_until: null,
+    });
+    // The expired A → C edge is absent, and no confirm_relate / unrelate lines are re-emitted.
+    expect(lines.some((r) => r.op === 'unrelate')).toBe(false);
+    expect(lines.some((r) => r.op === 'confirm_relate')).toBe(false);
+    expect(edgeLines.some((r) => r.to === c.id)).toBe(false);
+  });
+
+  it('AC-11: prunePendingEntities spares an unconfirmed, stale entity that has an outgoing relate patch', () => {
+    // A stale unconfirmed candidate that WOULD be pruned if it had no relations…
+    const candidate = appendEntity(
+      entityInput({
+        label: 'candidate with edge',
+        confirmed: false,
+        confidence: 0.7,
+        valid_from: daysAgoIso(31),
+      }),
+    );
+    const target = appendEntity(entityInput({ label: 'edge target' }));
+    // …but it has an outgoing relate patch (unconfirmed). attachRelations now surfaces this as an
+    // entry in properties.relations, so the prune guard at graph-compact.ts:176 spares it.
+    appendRelate(candidate.id, 'works_on', target.id, 0.7, 'session:s1', false);
+
+    prunePendingEntities();
+
+    // No 'pruned' supersede patch was appended for the candidate.
+    const prunedIds = readLines()
+      .filter((r) => r.op === 'supersede' && r.new === 'pruned')
+      .map((r) => r.old as string);
+    expect(prunedIds).not.toContain(candidate.id);
+  });
+
+  it('EC6: an edge whose `from` did not survive compaction is dropped and the compact re-loads clean', async () => {
+    const keep = appendEntity(entityInput({ label: 'keep' }));
+    const gone = appendEntity(entityInput({ label: 'gone' }));
+    const replacement = appendEntity(entityInput({ label: 'replacement' }));
+    // Confirmed edge FROM the entity that is about to be superseded.
+    appendRelate(gone.id, 'points_to', keep.id, 1.0, 'manual', true);
+    appendSupersede(gone.id, replacement.id); // `gone` will not survive compaction
+
+    await compactGraph(graphFile);
+
+    const lines = readLines();
+    // No relate line for the dropped `from`.
+    expect(lines.some((r) => r.op === 'relate' && r.from === gone.id)).toBe(false);
+    // Re-loading the compacted file does not throw and the survivors are intact.
+    expect(() => loadGraph()).not.toThrow();
+    const ids = loadGraph().map((e) => e.id);
+    expect(ids).toContain(keep.id);
+    expect(ids).toContain(replacement.id);
+    expect(ids).not.toContain(gone.id);
+  });
+
+  it('blocker path (b) / AC-15: a compacted confirmed edge is NOT downgraded by a later automated relate', async () => {
+    const parent = appendEntity(entityInput({ label: 'parent' }));
+    const child = appendEntity(entityInput({ label: 'child' }));
+
+    // 2–3: unconfirmed relate, then a human confirm_relate.
+    appendRelate(child.id, 'child_of', parent.id, 0.8, 'session:s1', false);
+    appendConfirmRelate(child.id, 'child_of', parent.id);
+
+    // 4: compact — the confirm_relate collapses into a relate(confirmed:true) line.
+    await compactGraph(graphFile);
+    const edgeLines = readLines().filter((r) => r.op === 'relate');
+    expect(edgeLines).toHaveLength(1);
+    expect(edgeLines[0]).toMatchObject({ confirmed: true, valid_until: null });
+
+    // 5: a later automated (confirmed:false) relate for the same triple, appended to the compact.
+    appendRelate(child.id, 'child_of', parent.id, 0.6, 'session:s2', false);
+
+    // 6: loadGraph re-applies the one-way latch — the edge stays confirmed and BFS still follows it.
+    const folded = loadGraph();
+    const childRec = folded.find((e) => e.id === child.id)!;
+    const rel = (childRec.properties.relations ?? []).find((r) => r.target_id === parent.id);
+    expect(rel).toBeDefined();
+    expect(rel!.confirmed).toBe(true);
+    expect(relatedEntities(child.id).map((e) => e.id)).toContain(parent.id);
   });
 });
