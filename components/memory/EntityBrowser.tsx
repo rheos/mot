@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Search } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Loader2, Search, X } from 'lucide-react';
 import type { EntityRecord } from '../../lib/graph';
 import { apiPath } from '../../lib/client/base-path';
 import { EmptyState, ErrorState, LoadingState } from '../ui-states';
@@ -106,6 +106,15 @@ export function EntityBrowser({
     filter === 'confirmed'
       ? entities.filter((e) => e.confirmed === true)
       : entities;
+
+  // id → label map for resolving relation targets to human labels in the detail panel (FR15).
+  // Built from the full entities state; re-derived whenever that list changes. A target not in
+  // the current list falls back to its raw id downstream (A4 — pruned or filtered away).
+  const labelMap = useMemo<Record<string, string>>(() => {
+    const m: Record<string, string> = {};
+    for (const e of entities) m[e.id] = e.label;
+    return m;
+  }, [entities]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -239,7 +248,7 @@ export function EntityBrowser({
           data-testid="entity-detail"
         >
           {selected ? (
-            <EntityDetail entity={selected} />
+            <EntityDetail entity={selected} labelMap={labelMap} />
           ) : (
             <p className="text-sm text-ink-3">Select an entity to see its details.</p>
           )}
@@ -249,13 +258,100 @@ export function EntityBrowser({
   );
 }
 
-function EntityDetail({ entity }: { entity: EntityRecord }): React.JSX.Element {
-  // GAP #4: nothing populates properties.relations today (no extraction, entity_create, or
-  // edge-write path exists yet — verified against the codebase). The sub-panel reads
-  // entity.properties.relations directly so it lights up automatically when edge-writing ships;
-  // until then it renders an explicit "No relations" empty state, NOT a blank gap (house rule 6
-  // — an empty surface is by-design direction, not a missing-data bug).
-  const relations = entity.properties.relations ?? [];
+// A relation as held on an entity record's properties.relations[] (OQ-A shape: confirmed required).
+type Relation = { rel: string; target_id: string; confirmed: boolean };
+
+// The confirm/reject POST returns either the resolved RelatePatch (has an `op` field) or a typed
+// { error } body. 'already_confirmed' / 'already_rejected' are treated as UI success (the edge is
+// already in the desired terminal state), same as the procedural-note island treats them.
+type RelateResult = { op?: string; [k: string]: unknown } | { error: string; [k: string]: unknown };
+
+function isRelateErrorBody(data: RelateResult): data is { error: string; [k: string]: unknown } {
+  return typeof data === 'object' && data !== null && 'error' in data;
+}
+
+// A stable per-edge key so the in-flight Set is unique per (rel, target_id) pair.
+function edgeKey(r: { rel: string; target_id: string }): string {
+  return `${r.rel}:${r.target_id}`;
+}
+
+function EntityDetail({
+  entity,
+  labelMap,
+}: {
+  entity: EntityRecord;
+  labelMap: Record<string, string>;
+}): React.JSX.Element {
+  // Local, optimistic copy of the relations for THIS entity. Confirm flips an edge's `confirmed`
+  // to true in place (the button disappears); Reject removes the edge entirely (it's now expired,
+  // FR16). The three fields reset whenever the selected entity changes (the useEffect below).
+  const [relations, setRelations] = useState<Relation[]>(
+    () => entity.properties.relations ?? [],
+  );
+  // Per-edge in-flight tracking, keyed `${rel}:${target_id}` — so one edge's button disables +
+  // spins while its POST is live, mirroring ProceduralBrowser's `confirming` Set.
+  const [confirming, setConfirming] = useState<Set<string>>(new Set());
+  // A single inline, dismissible action error (house rule 6).
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset all island state when the user selects a different entity (primitive dep — react-nextjs
+  // §6). Without this the previous entity's relations/error/in-flight state would leak across.
+  useEffect(() => {
+    setRelations(entity.properties.relations ?? []);
+    setConfirming(new Set());
+    setError(null);
+    // entity.id is the stable primitive key; reading entity.properties inside is intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity.id]);
+
+  async function actOnEdge(r: Relation, action: 'confirm' | 'reject'): Promise<void> {
+    const key = edgeKey(r);
+    setError(null);
+    setConfirming((prev) => new Set(prev).add(key));
+    try {
+      const res = await fetch(apiPath('/api/memory/relations'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: entity.id, rel: r.rel, to: r.target_id, action }),
+        cache: 'no-store',
+      });
+      const data = (await res.json()) as RelateResult;
+
+      // Terminal-state errors count as success: confirm treats 'already_confirmed' as done, reject
+      // treats 'already_rejected' as done. Any other typed error (or an HTTP failure) surfaces
+      // inline and leaves local state untouched.
+      const benign = action === 'confirm' ? 'already_confirmed' : 'already_rejected';
+      const isBenign = isRelateErrorBody(data) && data.error === benign;
+      if (!res.ok || (isRelateErrorBody(data) && !isBenign)) {
+        const reason = isRelateErrorBody(data) ? data.error : `HTTP ${res.status}`;
+        setError(`Could not ${action} relation: ${reason}`);
+        return;
+      }
+
+      if (action === 'confirm') {
+        // Flip this edge's confirmed to true in place — the Confirm/Reject buttons disappear, the
+        // edge stays visible as a confirmed relation (AC-12).
+        setRelations((prev) =>
+          prev.map((x) =>
+            x.rel === r.rel && x.target_id === r.target_id ? { ...x, confirmed: true } : x,
+          ),
+        );
+      } else {
+        // Rejected → expired → it should not render (FR16). Drop it from local state.
+        setRelations((prev) =>
+          prev.filter((x) => !(x.rel === r.rel && x.target_id === r.target_id)),
+        );
+      }
+    } catch {
+      setError(`Could not ${action} relation: request failed.`);
+    } finally {
+      setConfirming((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
 
   // Render properties as a key/value list, but pull `relations` out so it isn't double-shown in
   // the raw dump below.
@@ -295,7 +391,27 @@ function EntityDetail({ entity }: { entity: EntityRecord }): React.JSX.Element {
         </Field>
       </dl>
 
-      {/* Relations sub-panel (GAP #4) */}
+      {/* Inline, dismissible action error (house rule 6). */}
+      {error && (
+        <div
+          role="alert"
+          data-testid="relations-error"
+          className="flex items-start justify-between gap-3 rounded-[12px] border border-amber-line bg-amber-tint px-4 py-3 text-sm text-amber"
+        >
+          <span className="min-w-0 break-words">{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="Dismiss error"
+            data-testid="dismiss-relations-error"
+            className="shrink-0 rounded-ministry-xs p-0.5 text-amber hover:bg-[color-mix(in_srgb,var(--amber)_14%,transparent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
+          >
+            <X aria-hidden="true" className="h-4 w-4" strokeWidth={2} />
+          </button>
+        </div>
+      )}
+
+      {/* Relations sub-panel (FR15/FR16 — resolved labels + Confirm/Reject on candidate edges) */}
       <div>
         <h3 className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-gold-soft">
           Relations
@@ -305,19 +421,56 @@ function EntityDetail({ entity }: { entity: EntityRecord }): React.JSX.Element {
             No relations
           </p>
         ) : (
-          <ul className="flex flex-col gap-1" data-testid="relations-list">
-            {relations.map((r, i) => (
-              <li
-                key={`${r.rel}-${r.target_id}-${i}`}
-                className="flex items-center gap-2 text-sm text-ink-2"
-              >
-                <span className="font-semibold text-ink">{r.rel}</span>
-                <span className="text-ink-3">→</span>
-                <code className="break-all rounded-[5px] border border-hair bg-bg-alt px-1.5 py-0.5 font-mono text-[12px] text-ink-2">
-                  {r.target_id}
-                </code>
-              </li>
-            ))}
+          <ul className="flex flex-col gap-2" data-testid="relations-list">
+            {relations.map((r, i) => {
+              const key = edgeKey(r);
+              const inFlight = confirming.has(key);
+              // FR15: resolve the target id to its label; fall back to the raw id (A4).
+              const targetLabel = labelMap[r.target_id] ?? r.target_id;
+              return (
+                <li
+                  key={`${r.rel}-${r.target_id}-${i}`}
+                  data-testid="relation-row"
+                  className="flex flex-wrap items-center gap-2 text-sm text-ink-2"
+                >
+                  <span className="font-semibold text-ink">{r.rel}</span>
+                  <span className="text-ink-3">→</span>
+                  <span className="break-words font-semibold text-ink" data-testid="relation-target">
+                    {targetLabel}
+                  </span>
+                  {r.confirmed ? null : (
+                    <span className="ml-auto flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void actOnEdge(r, 'confirm')}
+                        disabled={inFlight}
+                        aria-busy={inFlight}
+                        data-testid="relation-confirm"
+                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-ministry-sm border border-gold-line px-2.5 text-[13px] font-bold text-gold-bright transition hover:bg-gold-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {inFlight ? (
+                          <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+                        ) : (
+                          <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
+                        )}
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void actOnEdge(r, 'reject')}
+                        disabled={inFlight}
+                        aria-busy={inFlight}
+                        data-testid="relation-reject"
+                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-ministry-sm border border-border px-2.5 text-[13px] font-semibold text-ink-2 transition hover:border-amber-line hover:text-amber focus:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <X aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
+                        Reject
+                      </button>
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
