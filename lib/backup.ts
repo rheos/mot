@@ -2,8 +2,12 @@ import { schedule } from 'node-cron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getDb } from '../db/client';
-import { prunePendingProcedural } from './procedural';
-import { prunePendingEntities, compactGraph } from './graph-compact';
+import { compactGraph } from './graph-compact';
+// NOTE: prunePendingProcedural / prunePendingEntities are intentionally NOT imported here anymore.
+// The nightly job no longer disuse-prunes memories — persistence is a hard product requirement
+// (a fact Taylor stated once must survive indefinitely, even if never referenced again). The prune
+// functions still exist in ./procedural and ./graph-compact for explicit, non-disuse cleanup, but
+// they are not wired into the cron. See memory: memory-system-ambient-not-administered.
 
 // ── Nightly backup (FR-DB-2, Assumption A8) ───────────────────────────────────
 // One job: a WAL-safe point-in-time snapshot of the SQLite DB every night at 02:00.
@@ -67,30 +71,17 @@ export function scheduleNightly(): void {
       console.error('[MOT] Graph backup failed:', e);
     }
 
-    // ── Nightly Recallatron maintenance (Track 4, FR-3.18) ──────────────────────
-    // Three steps, each in its OWN try/catch so one failure can't abort the others (AC-9).
-    // Order is FIXED: (a) procedural prune → (b) entity prune → (c) compact. Compact MUST run
-    // last so freshly-pruned entity records are excluded from the compacted snapshot.
+    // ── Nightly Recallatron maintenance ─────────────────────────────────────────
+    // DISUSE PRUNE REMOVED (2026-07-08). The old job ran (a) procedural prune → (b) entity prune
+    // before compacting: both deleted unconfirmed, lower-confidence memory candidates after 30
+    // days of NON-USE. That is exactly the use-or-lose decay this system must NOT do — persistence
+    // is the core promise (state it once, keep it forever, even if never referenced again).
+    // Only compaction runs now, and compaction is safe for persistence: it drops ONLY records that
+    // were explicitly superseded/corrected (superseded_by !== null), never records that were merely
+    // unused. Quality control belongs at extraction; wrong memories are fixed by correction, not by
+    // disuse-deletion. See memory: memory-system-ambient-not-administered.
 
-    // (a) Prune stale unconfirmed procedural candidates.
-    try {
-      const deleted = prunePendingProcedural();
-      // eslint-disable-next-line no-console
-      console.log(`[MOT/nightly] procedural prune: ${deleted} stale candidate(s) deleted`);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error('[MOT/nightly] procedural prune failed:', e);
-    }
-
-    // (b) Prune stale unconfirmed entity candidates (logs its own [MOT/nightly] count line).
-    try {
-      prunePendingEntities();
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error('[MOT/nightly] entity prune failed:', e);
-    }
-
-    // (c) Compact graph.jsonl, but only when it has grown past the 5 MB threshold — compaction
+    // Compact graph.jsonl, but only when it has grown past the 5 MB threshold — compaction
     // rewrites the whole file, so it isn't worth doing on a small graph. Runs AFTER (b) so the
     // just-pruned records are absent from the snapshot (FR-3.18).
     try {

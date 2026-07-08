@@ -1,19 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Recallatron Track 4 — Prompt 4: the three nightly maintenance steps appended to
-// scheduleNightly()'s 02:00 cron callback (lib/backup.ts).
+// The nightly maintenance step appended to scheduleNightly()'s 02:00 cron callback (lib/backup.ts).
 //
-// Test reach: the three steps live inside the anonymous callback passed to
-// schedule('0 2 * * *', ...) — never exported, and the Reviewability boundary forbids adding a
-// new export to lib/backup.ts. So we vi.mock('node-cron') to capture the callback argument
-// scheduleNightly() passes to schedule(...), then invoke that captured callback directly.
+// As of 2026-07-08 the nightly job NO LONGER disuse-prunes memories. Persistence is a hard product
+// requirement: a fact Taylor states once must survive indefinitely, even if never referenced again.
+// The old prunePendingProcedural / prunePendingEntities steps deleted unconfirmed, lower-confidence
+// candidates after 30 days of NON-USE — exactly the use-or-lose decay the system must not do. Only
+// graph compaction runs now, and compaction is safe for persistence: it drops ONLY records that
+// were explicitly superseded/corrected (superseded_by !== null), never merely-unused ones.
 //
-// The three step dependencies (prunePendingProcedural, prunePendingEntities, compactGraph) and
-// the DB/graph backup helpers are mocked so the callback is exercised in isolation — no real DB
-// or filesystem writes. These module mocks are hoisted, so this file is kept separate from the
-// real-DB backup.test.ts (which exercises vacuumInto/backupGraph for real).
+// Test reach: the step lives inside the anonymous callback passed to schedule('0 2 * * *', ...) —
+// never exported. So we vi.mock('node-cron') to capture the callback and invoke it directly.
 
-// Capture every callback scheduleNightly hands to node-cron's schedule().
 const scheduledCallbacks: Array<() => unknown> = [];
 vi.mock('node-cron', () => ({
   schedule: vi.fn((_expr: string, cb: () => unknown) => {
@@ -27,26 +25,15 @@ vi.mock('../../db/client', () => ({
   getDb: vi.fn(() => ({ exec: vi.fn() })),
 }));
 
-// Stub the two prune sources and the compactor. Each is a spy so we can assert call order and
-// make compactGraph throw for AC-9. prunePendingEntities logs its OWN [MOT/nightly] line, so the
-// mock reproduces that log (the callback does not log on its behalf).
-const prunePendingProcedural = vi.fn((_n?: number): number => 0);
-const prunePendingEntities = vi.fn((_n?: number): void => {
-  // eslint-disable-next-line no-console
-  console.log('[MOT/nightly] entity prune: 0 candidates marked as pruned');
-});
+// Only compactGraph is still wired into the nightly job. The prune functions are intentionally NOT
+// imported by lib/backup.ts anymore (persistence — see the header comment in that file).
 const compactGraph = vi.fn(async (_p: string): Promise<void> => {});
-vi.mock('../../lib/procedural', () => ({
-  prunePendingProcedural: (n?: number) => prunePendingProcedural(n),
-}));
 vi.mock('../../lib/graph-compact', () => ({
-  prunePendingEntities: (n?: number) => prunePendingEntities(n),
   compactGraph: (p: string) => compactGraph(p),
 }));
 
 const { scheduleNightly } = await import('../../lib/backup');
 
-// Resolve and run the single captured nightly callback.
 async function runNightly(): Promise<void> {
   scheduledCallbacks.length = 0;
   scheduleNightly();
@@ -54,15 +41,11 @@ async function runNightly(): Promise<void> {
   await scheduledCallbacks[0]();
 }
 
-// Inferred from the initializer — avoids fighting vitest 1.x's spyOn generic constraint.
 let logSpy = vi.spyOn(console, 'log');
 let errSpy = vi.spyOn(console, 'error');
 
 beforeEach(() => {
-  prunePendingProcedural.mockClear();
-  prunePendingEntities.mockClear();
   compactGraph.mockClear();
-  prunePendingProcedural.mockReturnValue(0);
   compactGraph.mockImplementation(async () => {});
   delete process.env.MOT_GRAPH_PATH;
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -79,29 +62,22 @@ function loggedLines(): string[] {
   return logSpy.mock.calls.map((c) => String(c[0]));
 }
 
-describe('scheduleNightly — Track 4 nightly maintenance steps', () => {
-  it('AC-6: logs a [MOT/nightly] line for each of the three steps', async () => {
-    // Point MOT_GRAPH_PATH at a definitely-absent file so the compact step takes the skip branch
-    // (no real graph file needed) and still emits its [MOT/nightly] line.
+describe('scheduleNightly — nightly maintenance (persistence: no disuse prune)', () => {
+  it('does NOT disuse-prune — no procedural/entity prune lines are emitted; compaction still runs', async () => {
+    // Absent file → compact takes the skip branch (no real graph needed) but still emits its line.
     process.env.MOT_GRAPH_PATH = '/nonexistent/mot-nightly-test/graph.jsonl';
 
     await runNightly();
 
     const lines = loggedLines();
-    // (a) procedural prune
-    expect(lines.some((l) => l.includes('[MOT/nightly] procedural prune:'))).toBe(true);
-    // (b) entity prune (logged by prunePendingEntities itself)
-    expect(lines.some((l) => l.includes('[MOT/nightly] entity prune:'))).toBe(true);
-    // (c) compact (skipped here, but still a [MOT/nightly] graph compact line)
+    // The old disuse-prune steps are gone: memories are never deleted for going unused.
+    expect(lines.some((l) => l.includes('[MOT/nightly] procedural prune'))).toBe(false);
+    expect(lines.some((l) => l.includes('[MOT/nightly] entity prune'))).toBe(false);
+    // Compaction (the only remaining step) still runs.
     expect(lines.some((l) => l.includes('[MOT/nightly] graph compact:'))).toBe(true);
-
-    expect(prunePendingProcedural).toHaveBeenCalledTimes(1);
-    expect(prunePendingEntities).toHaveBeenCalledTimes(1);
   });
 
-  it('AC-9: a compact failure does not abort the two prune steps', async () => {
-    // Force the compact path to run AND throw: point at a real >=5MB file, then make
-    // compactGraph reject. The per-step try/catch must isolate the failure.
+  it('a compact failure is caught and logged, not rethrown', async () => {
     const os = await import('node:os');
     const fs = await import('node:fs');
     const path = await import('node:path');
@@ -112,15 +88,8 @@ describe('scheduleNightly — Track 4 nightly maintenance steps', () => {
     compactGraph.mockRejectedValueOnce(new Error('boom'));
 
     try {
-      await runNightly();
+      await runNightly(); // the per-step try/catch must isolate the failure (no throw)
 
-      // Both prune steps still ran despite the compact throw.
-      expect(prunePendingProcedural).toHaveBeenCalledTimes(1);
-      expect(prunePendingEntities).toHaveBeenCalledTimes(1);
-      const lines = loggedLines();
-      expect(lines.some((l) => l.includes('[MOT/nightly] procedural prune:'))).toBe(true);
-      expect(lines.some((l) => l.includes('[MOT/nightly] entity prune:'))).toBe(true);
-      // The compact failure was caught and logged to console.error, not rethrown.
       expect(compactGraph).toHaveBeenCalledTimes(1);
       expect(
         errSpy.mock.calls.some((c) => String(c[0]).includes('[MOT/nightly] graph compact failed')),
