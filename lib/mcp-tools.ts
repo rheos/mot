@@ -5,7 +5,7 @@ import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory, searchActiveMemoryVector, searchActiveMemoryHybrid } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
-import { getEntity, searchEntities, relatedEntities, appendEntityConfirm, appendSupersede, appendRelate, confirmRelate, rejectRelate, isRelType, REL_VOCABULARY, type EntityRecord } from './graph';
+import { getEntity, searchEntities, relatedEntities, confirmEntity, appendSupersede, appendRelate, confirmRelate, rejectRelate, isRelType, REL_VOCABULARY, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
 import { memoryContext } from './memory-context';
 import { compactGraph } from './graph-compact';
@@ -756,19 +756,11 @@ export async function callMcpTool(
         typeof args.hops === 'number' ? args.hops : 1,
       ));
 
-    case 'entity_confirm': {
-      // AC-12: pre-checks via getEntity (includes superseded records) mirror confirmNote's
-      // not_found / already_confirmed pattern. A superseded entity is not confirmable in place
-      // (EC-1) — return not_found, not a distinct error, by design. Never throws.
-      const id = args.id as string;
-      const existing = getEntity(id);
-      if (existing === null) return text({ error: 'not_found' });
-      if (existing.record.superseded_by !== null) return text({ error: 'not_found' });
-      if (existing.record.confirmed === true) return text({ error: 'already_confirmed' });
-      appendEntityConfirm(id);
-      const updated = getEntity(id);
-      return text(updated?.record ?? { error: 'not_found' });
-    }
+    case 'entity_confirm':
+      // Shared pre-checks + append live in confirmEntity (lib/graph.ts), also used by
+      // POST /api/memory/entities/confirm (the browser Confirm button). Never throws (AC-12):
+      // not_found (missing OR superseded) / already_confirmed; else the updated record.
+      return text(confirmEntity(args.id as string));
 
     case 'entity_supersede': {
       // AC-12: raw patch appender, not a chain resolver — if the target is itself superseded,

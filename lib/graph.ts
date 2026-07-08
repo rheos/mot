@@ -433,6 +433,24 @@ export function rejectRelate(
 }
 
 /**
+ * Confirm a candidate entity (Track 2). Typed-result, never throws — mirrors the
+ * confirmRelate/confirmNote pattern so the pre-checks live in ONE place, shared by the
+ * `entity_confirm` MCP tool AND POST /api/memory/entities/confirm (the browser Confirm button).
+ * not_found → missing OR superseded (a superseded/pruned entity is not confirmable in place,
+ * EC-1); already_confirmed → the entity is already confirmed. On success, appends the confirm
+ * patch and returns the updated record.
+ */
+export function confirmEntity(id: string): EntityRecord | { error: string } {
+  const existing = getEntity(id);
+  if (existing === null) return { error: 'not_found' };
+  if (existing.record.superseded_by !== null) return { error: 'not_found' };
+  if (existing.record.confirmed === true) return { error: 'already_confirmed' };
+  appendEntityConfirm(id);
+  const updated = getEntity(id);
+  return updated?.record ?? { error: 'not_found' };
+}
+
+/**
  * Read the JSONL file and fold supersession patches over the entity records.
  * Exported for Track-5 vector retrieval (KNN entity-id resolution against the folded
  * graph). Tolerant of malformed lines (EC-1, AC-13): a line that fails JSON.parse is

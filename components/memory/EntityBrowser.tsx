@@ -293,6 +293,11 @@ function EntityDetail({
   const [confirming, setConfirming] = useState<Set<string>>(new Set());
   // A single inline, dismissible action error (house rule 6).
   const [error, setError] = useState<string | null>(null);
+  // Entity-level confirm (Track 2) — the browser's own Confirm control, parallel to the
+  // entity_confirm MCP tool Rheo uses. Optimistic local flag so the button disappears on success
+  // without a refetch; reset (like the fields above) when the selected entity changes.
+  const [entityConfirmed, setEntityConfirmed] = useState<boolean>(entity.confirmed);
+  const [confirmingEntity, setConfirmingEntity] = useState<boolean>(false);
 
   // Reset all island state when the user selects a different entity (primitive dep — react-nextjs
   // §6). Without this the previous entity's relations/error/in-flight state would leak across.
@@ -300,9 +305,38 @@ function EntityDetail({
     setRelations(entity.properties.relations ?? []);
     setConfirming(new Set());
     setError(null);
+    setEntityConfirmed(entity.confirmed);
+    setConfirmingEntity(false);
     // entity.id is the stable primitive key; reading entity.properties inside is intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entity.id]);
+
+  // Confirm THIS entity (keeps it out of the nightly prune of stale unconfirmed candidates).
+  async function confirmThisEntity(): Promise<void> {
+    setError(null);
+    setConfirmingEntity(true);
+    try {
+      const res = await fetch(apiPath('/api/memory/entities/confirm'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: entity.id }),
+        cache: 'no-store',
+      });
+      const data = (await res.json()) as { error?: string };
+      // 'already_confirmed' is UI success — the entity is confirmed either way.
+      const benign = data.error === 'already_confirmed';
+      if (!res.ok || (typeof data.error === 'string' && !benign)) {
+        const reason = typeof data.error === 'string' ? data.error : `HTTP ${res.status}`;
+        setError(`Could not confirm this entity: ${reason}`);
+        return;
+      }
+      setEntityConfirmed(true);
+    } catch {
+      setError('Could not confirm this entity: request failed.');
+    } finally {
+      setConfirmingEntity(false);
+    }
+  }
 
   async function actOnEdge(r: Relation, action: 'confirm' | 'reject'): Promise<void> {
     const key = edgeKey(r);
@@ -382,7 +416,30 @@ function EntityDetail({
 
       <dl className="grid grid-cols-2 gap-x-[22px] gap-y-3">
         <Field label="Confidence">{entity.confidence.toFixed(2)}</Field>
-        <Field label="Confirmed">{entity.confirmed ? 'Yes' : 'No'}</Field>
+        <Field label="Confirmed">
+          {entityConfirmed || entity.superseded_by !== null ? (
+            entityConfirmed ? 'Yes' : 'No'
+          ) : (
+            <span className="flex items-center gap-2">
+              <span className="text-ink-2">No</span>
+              <button
+                type="button"
+                onClick={() => void confirmThisEntity()}
+                disabled={confirmingEntity}
+                aria-busy={confirmingEntity}
+                data-testid="confirm-entity"
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-ministry-sm border border-gold-line px-2.5 text-[13px] font-bold text-gold-bright transition hover:bg-gold-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {confirmingEntity ? (
+                  <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+                ) : (
+                  <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
+                )}
+                Confirm
+              </button>
+            </span>
+          )}
+        </Field>
         <Field label="Valid from">{entity.valid_from}</Field>
         <Field label="Source">
           <code className="break-all rounded-[5px] border border-hair bg-bg-alt px-1.5 py-0.5 font-mono text-[12px] text-ink-2">
