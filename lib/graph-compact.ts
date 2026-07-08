@@ -15,9 +15,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   appendSupersede,
+  resolveEdges,
+  attachRelations,
   type EntityRecord,
   type SupersessionPatch,
   type ConfirmPatch,
+  type RelatePatch,
+  type ConfirmRelatePatch,
+  type UnrelatePatch,
 } from './graph';
 import { getDb } from '../db/client';
 import { vecDelete, vecAvailable } from './vec';
@@ -29,9 +34,15 @@ function defaultGraphPath(): string {
   return process.env.MOT_GRAPH_PATH ?? path.join(process.cwd(), 'ontology', 'graph.jsonl');
 }
 
-// A parsed JSONL line is an entity record, a supersession patch, or a confirmation patch —
-// the same three shapes lib/graph.ts discriminates on `op`.
-type ParsedLine = EntityRecord | SupersessionPatch | ConfirmPatch;
+// A parsed JSONL line is an entity record, a supersession/confirmation patch, or one of the
+// three Track-6 edge patches — the same six shapes lib/graph.ts discriminates on `op`.
+type ParsedLine =
+  | EntityRecord
+  | SupersessionPatch
+  | ConfirmPatch
+  | RelatePatch
+  | ConfirmRelatePatch
+  | UnrelatePatch;
 
 function isSupersedePatch(rec: unknown): rec is SupersessionPatch {
   return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'supersede';
@@ -39,6 +50,18 @@ function isSupersedePatch(rec: unknown): rec is SupersessionPatch {
 
 function isConfirmPatch(rec: unknown): rec is ConfirmPatch {
   return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'confirm';
+}
+
+// Track 6 edge patch discriminators — same pattern as isSupersedePatch / isConfirmPatch
+// (a local copy mirrors lib/graph.ts's private guards; the graph.ts fold owns edge semantics).
+function isRelatePatch(rec: unknown): rec is RelatePatch {
+  return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'relate';
+}
+function isConfirmRelatePatch(rec: unknown): rec is ConfirmRelatePatch {
+  return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'confirm_relate';
+}
+function isUnrelatePatch(rec: unknown): rec is UnrelatePatch {
+  return typeof rec === 'object' && rec !== null && (rec as { op?: unknown }).op === 'unrelate';
 }
 
 /**
@@ -66,22 +89,37 @@ function readRecords(graphPath: string): ParsedLine[] {
 }
 
 /**
- * Fold the supersession + confirmation patches over the entity records, reproducing
- * lib/graph.ts:117-171. Returns the full entity Map (every entity, regardless of status) with
- * each entity's effective `superseded_by` / `confirmed` resolved. A patch for an unknown id is a
- * no-op (the entity may have been compacted away). The caller filters by status.
+ * Fold the supersession + confirmation + edge patches over the entity records, reproducing
+ * lib/graph.ts's loadGraph fold. Returns the full entity Map (every entity, regardless of status)
+ * with each entity's effective `superseded_by` / `confirmed` and its `properties.relations[]`
+ * (rebuilt wholesale from relate patches via the shared attachRelations) resolved. A patch for an
+ * unknown id is a no-op (the entity may have been compacted away). The caller filters by status.
+ *
+ * The edge fold is load-bearing for prunePendingEntities: its guard at line 176 reads
+ * `entity.properties.relations`, which is now populated from the relate patches — so an unconfirmed
+ * entity with an outgoing relate patch is NOT pruned (FR14/EC10).
  */
 function foldRecords(records: ParsedLine[]): Map<string, EntityRecord> {
   const entities = new Map<string, EntityRecord>();
   const patches: SupersessionPatch[] = [];
   const confirmPatches: ConfirmPatch[] = [];
+  const relateBucket: RelatePatch[] = [];
+  const confirmRelateBucket: ConfirmRelatePatch[] = [];
+  const unrelateBucket: UnrelatePatch[] = [];
 
   for (const rec of records) {
     if (isSupersedePatch(rec)) {
       patches.push(rec);
     } else if (isConfirmPatch(rec)) {
       confirmPatches.push(rec);
+    } else if (isRelatePatch(rec)) {
+      relateBucket.push(rec);
+    } else if (isConfirmRelatePatch(rec)) {
+      confirmRelateBucket.push(rec);
+    } else if (isUnrelatePatch(rec)) {
+      unrelateBucket.push(rec);
     } else {
+      // An id-less patch line MUST NOT reach here — it would set a garbage `undefined` key.
       const entity = rec as EntityRecord;
       entities.set(entity.id, entity);
     }
@@ -99,6 +137,13 @@ function foldRecords(records: ParsedLine[]): Map<string, EntityRecord> {
     const target = entities.get(cp.id);
     if (target) target.confirmed = true;
   }
+
+  // Edge fold (Track 6): resolve the (from, rel, to) triples and rebuild every entity's effective
+  // properties.relations[] via the SHARED helpers from lib/graph — no third copy of edge semantics.
+  // `resolvedEdges` is a local, consumed only by attachRelations; it is NOT returned (the return
+  // type stays Map<string,EntityRecord>, which prunePendingEntities / graphEntitySources depend on).
+  const resolvedEdges = resolveEdges(relateBucket, confirmRelateBucket, unrelateBucket);
+  attachRelations(entities, resolvedEdges);
 
   return entities;
 }
@@ -119,12 +164,35 @@ export async function compactGraph(graphPath: string): Promise<void> {
   const entities = foldRecords(records);
 
   const survivors = [...entities.values()].filter((e) => e.superseded_by === null);
+  // Hoisted above the atomic write so it gates BOTH edge emission and the vec-prune loop below.
+  const survivorSet = new Set(survivors.map((e) => e.id));
 
-  // Atomic replace: write the survivors to a temp file, then rename over the original. If the
-  // process dies before the rename, the original survives untouched (EC-9).
+  // Re-derive the edge buckets from `records` (foldRecords' resolvedEdges is a local there, not
+  // returned) and resolve them via the SHARED fold. Emit only LIVE edges whose `from` survived
+  // compaction — expired edges (valid_until !== null) and edges off a dropped `from` are gone.
+  // The confirmed one-way latch bakes any confirm_relate into the relate line's confirmed flag,
+  // so a later automated relate(confirmed:false) can't downgrade a compacted-confirmed edge
+  // (blocker path b). confirm_relate / unrelate lines are collapsed away — not re-emitted.
+  const relateBucket: RelatePatch[] = [];
+  const confirmRelateBucket: ConfirmRelatePatch[] = [];
+  const unrelateBucket: UnrelatePatch[] = [];
+  for (const rec of records) {
+    if (isRelatePatch(rec)) relateBucket.push(rec);
+    else if (isConfirmRelatePatch(rec)) confirmRelateBucket.push(rec);
+    else if (isUnrelatePatch(rec)) unrelateBucket.push(rec);
+  }
+  const compactedEdges = resolveEdges(relateBucket, confirmRelateBucket, unrelateBucket).filter(
+    (e) => e.valid_until === null && survivorSet.has(e.from),
+  );
+
+  // Atomic replace: write the survivor entity lines AND the resolved live edge lines to a temp
+  // file, then rename over the original. If the process dies before the rename, the original
+  // survives untouched (EC-9). Both entity and edge lines go in the same atomic write.
   const tmp = graphPath + '.compact.tmp';
-  const body = survivors.map((e) => JSON.stringify(e)).join('\n');
-  fs.writeFileSync(tmp, survivors.length > 0 ? body + '\n' : '');
+  const entityBody = survivors.map((e) => JSON.stringify(e)).join('\n');
+  const edgeBody = compactedEdges.map((e) => JSON.stringify(e)).join('\n');
+  const body = [entityBody, edgeBody].filter(Boolean).join('\n');
+  fs.writeFileSync(tmp, body.length > 0 ? body + '\n' : '');
   fs.renameSync(tmp, graphPath);
 
   // FR 9: synchronously prune entity_vec for every entity that did not survive compaction.
@@ -133,7 +201,6 @@ export async function compactGraph(graphPath: string): Promise<void> {
   // "vec tables exist" — in the embed-off test suite the 0007 tables are absent.
   if (embeddingEnabled() && vecAvailable()) {
     const db = getDb();
-    const survivorSet = new Set(survivors.map((e) => e.id));
     for (const e of entities.values()) {
       if (!survivorSet.has(e.id)) {
         try {
