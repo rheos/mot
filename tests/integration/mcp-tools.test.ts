@@ -30,7 +30,7 @@ process.env.MOT_GRAPH_PATH = graphFile;
 const { migrate_db, getDb } = await import('../../db/client');
 const { callMcpTool } = await import('../../lib/mcp-tools');
 const { writeMemory } = await import('../../lib/memory');
-const { appendEntity } = await import('../../lib/graph');
+const { appendEntity, appendRelate } = await import('../../lib/graph');
 
 // callMcpTool returns ToolContent = [{ type:'text', text: JSON.stringify(data) }]. Parse the
 // single text block back into the typed payload the tool produced.
@@ -178,7 +178,7 @@ describe('entity tools', () => {
     const alex = appendEntity({
       type: 'Person',
       label: 'Alex Goodwin',
-      properties: { relations: [{ rel: 'child_of', target_id: schoolId }] },
+      properties: {},
       valid_from: '2026-01-01T00:00:00.000Z',
       valid_until: null,
       confidence: 0.95,
@@ -187,6 +187,9 @@ describe('entity tools', () => {
       confirmed: true,
     });
     alexId = alex.id;
+    // Track 6 — Alex child_of Greenwood via a confirmed relate patch (edges live as patches,
+    // not inline on the entity record; the fold rebuilds properties.relations from them).
+    appendRelate(alexId, 'child_of', schoolId, 0.95, 'manual', true);
   });
 
   it('entity_get returns the record plus 1-hop relations (happy path)', async () => {
@@ -268,6 +271,79 @@ describe('procedural note tools', () => {
   it('procedural_note_confirm on an already-confirmed note returns typed error, does not throw (AC-12)', async () => {
     const result = await expectNoThrow('procedural_note_confirm', { id: pendingId });
     expect((result as { error: string }).error).toBe('already_confirmed');
+  });
+});
+
+// ── Track 6 — edge MCP tools (entity_relate / _confirm / _reject) ────────────
+
+describe('Track 6 edge tools', () => {
+  // Fresh entity pair per case (cuid2 ids are unique; the graph file is append-only and shared
+  // across this module, so a triple is never reused between assertions).
+  function seedTwo(): { from: string; to: string } {
+    const mk = (label: string, type: 'Person' | 'Project') =>
+      appendEntity({
+        type,
+        label,
+        properties: {},
+        valid_from: '2026-01-01T00:00:00.000Z',
+        valid_until: null,
+        confidence: 0.9,
+        source: 'manual',
+        superseded_by: null,
+        confirmed: true,
+      }).id;
+    return { from: mk('edge-from', 'Person'), to: mk('edge-to', 'Project') };
+  }
+
+  it('entity_relate happy path: writes a confirmed manual edge', async () => {
+    const { from, to } = seedTwo();
+    const r = (await call('entity_relate', { from, rel: 'child_of', to })) as {
+      op: string; from: string; confirmed: boolean; source: string;
+    };
+    expect(r.op).toBe('relate');
+    expect(r.from).toBe(from);
+    expect(r.confirmed).toBe(true);
+    expect(r.source).toBe('manual');
+  });
+
+  it('entity_relate self-relation → { error: self_relate } (AC-5), no throw', async () => {
+    const { from } = seedTwo();
+    const result = await expectNoThrow('entity_relate', { from, rel: 'child_of', to: from });
+    expect((result as { error: string }).error).toBe('self_relate');
+  });
+
+  it('entity_relate off-vocabulary verb → { error: invalid_rel }, no throw', async () => {
+    const { from, to } = seedTwo();
+    const result = await expectNoThrow('entity_relate', { from, rel: 'runs_on', to });
+    expect((result as { error: string }).error).toBe('invalid_rel');
+  });
+
+  it('entity_relate non-existent from / to → typed errors (AC-5), no throw', async () => {
+    const { from, to } = seedTwo();
+    const missingFrom = await expectNoThrow('entity_relate', { from: 'no-such', rel: 'child_of', to });
+    expect((missingFrom as { error: string }).error).toBe('from_not_found');
+    const missingTo = await expectNoThrow('entity_relate', { from, rel: 'child_of', to: 'no-such' });
+    expect((missingTo as { error: string }).error).toBe('to_not_found');
+  });
+
+  it('entity_relate_confirm happy path + already_confirmed (AC-12), no throw', async () => {
+    const { from, to } = seedTwo();
+    appendRelate(from, 'child_of', to, 0.8, 'session:s', false); // unconfirmed candidate
+    const confirmed = await call('entity_relate_confirm', { from, rel: 'child_of', to });
+    expect((confirmed as { confirmed: boolean }).confirmed).toBe(true);
+    const again = await expectNoThrow('entity_relate_confirm', { from, rel: 'child_of', to });
+    expect((again as { error: string }).error).toBe('already_confirmed');
+  });
+
+  it('entity_relate_reject happy path + not_found + already_rejected (AC-12), no throw', async () => {
+    const { from, to } = seedTwo();
+    appendRelate(from, 'child_of', to, 0.8, 'session:s', false); // live unconfirmed edge
+    const rejected = await call('entity_relate_reject', { from, rel: 'child_of', to });
+    expect((rejected as { valid_until: string | null }).valid_until).not.toBeNull();
+    const notFound = await expectNoThrow('entity_relate_reject', { from, rel: 'child_of', to: 'no-such' });
+    expect((notFound as { error: string }).error).toBe('not_found');
+    const alreadyRejected = await expectNoThrow('entity_relate_reject', { from, rel: 'child_of', to });
+    expect((alreadyRejected as { error: string }).error).toBe('already_rejected');
   });
 });
 
