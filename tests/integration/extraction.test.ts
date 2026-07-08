@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,7 +20,7 @@ process.env.MOT_GRAPH_PATH = graphFile;
 
 const { migrate_db, getDb } = await import('../../db/client');
 const { runExtraction, TEST_DIGEST_FIXTURE } = await import('../../lib/extraction');
-const { searchEntities } = await import('../../lib/graph');
+const { searchEntities, appendEntity } = await import('../../lib/graph');
 const { levenshtein } = await import('../../lib/levenshtein');
 
 const SESSION_ID = 's-extract';
@@ -41,6 +41,7 @@ function digestRow(overrides: Partial<DigestRow> = {}): DigestRow {
     topics: null,
     entity_draft: null,
     procedural_raw: null,
+    relation_draft: null,
     parse_error: 0,
     turn_count: 5,
     ...overrides,
@@ -307,5 +308,288 @@ describe('levenshtein edit distance (lib/levenshtein)', () => {
 
   it('"Alex" vs "Alex Goodwin" → 8 (caught by prefix, not distance)', () => {
     expect(levenshtein('alex', 'alex goodwin')).toBe(8);
+  });
+});
+
+// Track 6 Phase 2 — processRelations + matchByLabel. Driven end-to-end through runExtraction
+// (processRelations is module-private), so the guard at extraction.ts and the whole resolve path
+// are exercised. Each case wants a clean graph so matchByLabel's candidate pool is deterministic;
+// this block points MOT_GRAPH_PATH at its own dir and resets the graph before each case.
+describe('Track 6 Phase 2 — processRelations candidate edges', () => {
+  let relDir: string;
+  let relGraph: string;
+  const prevGraphPath = process.env.MOT_GRAPH_PATH;
+
+  beforeAll(() => {
+    relDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-relations-'));
+    relGraph = path.join(relDir, 'graph.jsonl');
+    process.env.MOT_GRAPH_PATH = relGraph;
+  });
+
+  afterAll(() => {
+    fs.rmSync(relDir, { recursive: true, force: true });
+    if (prevGraphPath === undefined) delete process.env.MOT_GRAPH_PATH;
+    else process.env.MOT_GRAPH_PATH = prevGraphPath;
+  });
+
+  function resetGraph(): void {
+    fs.mkdirSync(path.dirname(relGraph), { recursive: true });
+    fs.writeFileSync(relGraph, '');
+  }
+
+  // Seed a confirmed active entity so matchByLabel resolves it. Returns the generated id.
+  function seedEntity(
+    label: string,
+    type: 'Person' | 'Project' | 'Deadline' | 'Preference' | 'Fact' = 'Person',
+  ): string {
+    return appendEntity({
+      type,
+      label,
+      properties: {},
+      confidence: 1.0,
+      confirmed: true,
+      source: 'manual',
+      valid_from: '2026-06-01T00:00:00.000Z',
+      valid_until: null,
+      superseded_by: null,
+    }).id;
+  }
+
+  // Count op:'relate' lines currently in the graph file.
+  function relatePatchCount(): number {
+    if (!fs.existsSync(relGraph)) return 0;
+    return fs
+      .readFileSync(relGraph, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l) as { op?: string })
+      .filter((r) => r.op === 'relate').length;
+  }
+
+  // Read the single relate patch (asserts there is exactly one first).
+  function theRelatePatch(): { from: string; rel: string; to: string; confidence: number; source: string; confirmed: boolean } {
+    const patches = fs
+      .readFileSync(relGraph, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.op === 'relate');
+    expect(patches).toHaveLength(1);
+    return patches[0];
+  }
+
+  async function runRelationDraft(items: unknown, overrides: Record<string, unknown> = {}): Promise<void> {
+    await runExtraction(
+      digestRow({
+        session_id: 's-rel',
+        entity_draft: null,
+        procedural_raw: null,
+        relation_draft: typeof items === 'string' ? items : JSON.stringify(items),
+        ...overrides,
+      }),
+    );
+  }
+
+  it('AC-6: confidence gate — 0.8499 appends no patch, 0.85 appends one', async () => {
+    resetGraph();
+    const robin = seedEntity('Taylor', 'Person');
+    const sampleapp = seedEntity('SampleApp', 'Project');
+
+    await runRelationDraft([
+      { from_label: 'Taylor', from_type: 'Person', rel: 'works_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.8499 },
+    ]);
+    expect(relatePatchCount()).toBe(0);
+
+    await runRelationDraft([
+      { from_label: 'Taylor', from_type: 'Person', rel: 'works_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.85 },
+    ]);
+    const patch = theRelatePatch();
+    expect(patch.from).toBe(robin);
+    expect(patch.to).toBe(sampleapp);
+    expect(patch.rel).toBe('works_on');
+    expect(patch.confirmed).toBe(false);
+    expect(patch.source).toBe('session:s-rel');
+  });
+
+  it('AC-7: from_label resolves to zero entities → no patch, warn names the label', async () => {
+    resetGraph();
+    seedEntity('SampleApp', 'Project');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await runRelationDraft([
+      { from_label: 'Nonexistent Person', from_type: 'Person', rel: 'works_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.95 },
+    ]);
+
+    expect(relatePatchCount()).toBe(0);
+    expect(warn.mock.calls.flat().join(' ')).toContain('Nonexistent Person');
+    warn.mockRestore();
+  });
+
+  it('AC-8: from_label resolves to two entities → no patch, warn names label + count', async () => {
+    resetGraph();
+    // Two active Person entities with the SAME label — exact-match ambiguity.
+    seedEntity('Taylor', 'Person');
+    seedEntity('Taylor', 'Person');
+    seedEntity('SampleApp', 'Project');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await runRelationDraft([
+      { from_label: 'Taylor', from_type: 'Person', rel: 'works_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.95 },
+    ]);
+
+    expect(relatePatchCount()).toBe(0);
+    const msg = warn.mock.calls.flat().join(' ');
+    expect(msg).toContain('Taylor');
+    expect(msg).toContain('2');
+    warn.mockRestore();
+  });
+
+  it('AC-9: malformed relation_draft warns, does not throw, entity pass unaffected (EC5)', async () => {
+    resetGraph();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // entity_draft is valid → its entity must still land despite the malformed relation_draft.
+    await expect(
+      runExtraction(
+        digestRow({
+          session_id: 's-rel',
+          entity_draft: JSON.stringify([{ type: 'Person', label: 'Solo Person', properties: {}, confidence: 0.9 }]),
+          procedural_raw: null,
+          relation_draft: 'not json at all',
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(relatePatchCount()).toBe(0);
+    const people = searchEntities('', 'Person');
+    expect(people.map((e) => e.label)).toContain('Solo Person');
+    warn.mockRestore();
+  });
+
+  it('EC3: self-relation after resolution → no patch, logged', async () => {
+    resetGraph();
+    seedEntity('Taylor', 'Person');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await runRelationDraft([
+      { from_label: 'Taylor', from_type: 'Person', rel: 'child_of', to_label: 'Taylor', to_type: 'Person', confidence: 0.95 },
+    ]);
+
+    expect(relatePatchCount()).toBe(0);
+    expect(warn.mock.calls.flat().join(' ').toLowerCase()).toContain('self-relate');
+    warn.mockRestore();
+  });
+
+  it('invalid rel verb → skip and log, no patch', async () => {
+    resetGraph();
+    seedEntity('Taylor', 'Person');
+    seedEntity('SampleApp', 'Project');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await runRelationDraft([
+      { from_label: 'Taylor', from_type: 'Person', rel: 'is_parent_of', to_label: 'SampleApp', to_type: 'Project', confidence: 0.95 },
+    ]);
+
+    expect(relatePatchCount()).toBe(0);
+    expect(warn.mock.calls.flat().join(' ')).toContain('is_parent_of');
+    warn.mockRestore();
+  });
+
+  it('relation-only digest (entity_draft + procedural_raw null) reaches processRelations', async () => {
+    resetGraph();
+    const robin = seedEntity('Taylor', 'Person');
+    const sampleapp = seedEntity('SampleApp', 'Project');
+
+    // The guard at extraction.ts must let a relation-only row through (entity/procedural both null).
+    await runRelationDraft([
+      { from_label: 'Taylor', from_type: 'Person', rel: 'works_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.9 },
+    ]);
+
+    const patch = theRelatePatch();
+    expect(patch.from).toBe(robin);
+    expect(patch.to).toBe(sampleapp);
+  });
+
+  it('type-hint disambiguation: same label, two types — from_type picks the Project node', async () => {
+    resetGraph();
+    seedEntity('SampleApp', 'Project');
+    seedEntity('SampleApp', 'Fact');
+    const projectNutri = searchEntities('SampleApp', 'Project')[0].id;
+    seedEntity('Taylor', 'Person'); // a distinct `to` so it's not a self-relate
+    const robin = searchEntities('Taylor', 'Person')[0].id;
+
+    // With from_type:'Project' the typed pool has exactly one 'SampleApp' → resolves cleanly.
+    await runRelationDraft([
+      { from_label: 'SampleApp', from_type: 'Project', rel: 'belongs_to', to_label: 'Taylor', to_type: 'Person', confidence: 0.9 },
+    ]);
+    const patch = theRelatePatch();
+    expect(patch.from).toBe(projectNutri);
+    expect(patch.to).toBe(robin);
+  });
+
+  it('type-hint omitted: same label two types → ambiguous, skip (AC-8 path)', async () => {
+    resetGraph();
+    seedEntity('SampleApp', 'Project');
+    seedEntity('SampleApp', 'Fact');
+    seedEntity('Taylor', 'Person');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // No from_type → type-agnostic scan → both 'SampleApp' nodes exact-match → ambiguous.
+    await runRelationDraft([
+      { from_label: 'SampleApp', rel: 'belongs_to', to_label: 'Taylor', to_type: 'Person', confidence: 0.9 },
+    ]);
+
+    expect(relatePatchCount()).toBe(0);
+    expect(warn.mock.calls.flat().join(' ')).toContain('SampleApp');
+    warn.mockRestore();
+  });
+
+  it('AC-19 (W1): mismatched type hint still resolves via typed-then-widen', async () => {
+    resetGraph();
+    // The only 'smallhost-box' node is stored as Fact; the bot guessed Project (wrong).
+    const box = seedEntity('smallhost-box', 'Fact');
+    const sampleapp = seedEntity('SampleApp', 'Project');
+
+    // to_type:'Project' → typed pool has zero 'smallhost-box' → widen to type-agnostic → Fact node.
+    await runRelationDraft([
+      { from_label: 'SampleApp', from_type: 'Project', rel: 'hosted_on', to_label: 'smallhost-box', to_type: 'Project', confidence: 0.9 },
+    ]);
+
+    const patch = theRelatePatch();
+    expect(patch.from).toBe(sampleapp);
+    expect(patch.to).toBe(box);
+  });
+
+  it('AC-20 (W2): Levenshtein-1 decoy with no exact match does NOT resolve', async () => {
+    resetGraph();
+    seedEntity('moi', 'Project');
+    seedEntity('SampleApp', 'Project');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // 'mot' is distance 1 from stored 'moi' but there is NO exact match and prefix/suffix
+    // containment does not fire (neither is a prefix/suffix of the other) → unresolved, no patch.
+    await runRelationDraft([
+      { from_label: 'mot', from_type: 'Project', rel: 'depends_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.95 },
+    ]);
+
+    expect(relatePatchCount()).toBe(0);
+    expect(warn.mock.calls.flat().join(' ')).toContain('mot');
+    warn.mockRestore();
+  });
+
+  it('infra-edge fixture: a complete owns item appends exactly one relate patch', async () => {
+    resetGraph();
+    const robin = seedEntity('Taylor', 'Person');
+    const sampleapp = seedEntity('SampleApp', 'Project');
+
+    await runRelationDraft([
+      { from_label: 'Taylor', from_type: 'Person', rel: 'owns', to_label: 'SampleApp', to_type: 'Project', confidence: 0.9 },
+    ]);
+
+    expect(relatePatchCount()).toBe(1);
+    const patch = theRelatePatch();
+    expect(patch.rel).toBe('owns');
+    expect(patch.from).toBe(robin);
+    expect(patch.to).toBe(sampleapp);
   });
 });

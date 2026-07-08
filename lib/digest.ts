@@ -12,6 +12,7 @@ export interface DigestPayload {
   topics?: string | null;        // comma-separated; reserved/unpopulated at Track 1
   entity_draft?: string | null;  // JSON text; null on structural or parse-error path
   procedural_raw?: string | null; // JSON text; null on structural or parse-error path
+  relation_draft?: string | null; // JSON text; null on structural or parse-error path
   parse_error?: boolean;
 }
 
@@ -24,6 +25,7 @@ export interface DigestRow {
   topics: string | null;
   entity_draft: string | null;
   procedural_raw: string | null;
+  relation_draft: string | null;
   parse_error: number; // 0/1 — better-sqlite3 raw integer, not Drizzle-coerced boolean
   turn_count: number;
 }
@@ -36,16 +38,17 @@ export function upsertDigest(payload: DigestPayload): DigestRow {
 
   db.prepare(
     `INSERT INTO session_digest
-       (session_id, chat_id, summary, ts, topics, entity_draft, procedural_raw, parse_error, turn_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (session_id, chat_id, summary, ts, topics, entity_draft, procedural_raw, relation_draft, parse_error, turn_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(session_id) DO UPDATE SET
-       summary       = excluded.summary,
-       ts            = excluded.ts,
-       topics        = excluded.topics,
-       entity_draft  = excluded.entity_draft,
+       summary        = excluded.summary,
+       ts             = excluded.ts,
+       topics         = excluded.topics,
+       entity_draft   = excluded.entity_draft,
        procedural_raw = excluded.procedural_raw,
-       parse_error   = excluded.parse_error,
-       turn_count    = excluded.turn_count`,
+       relation_draft = excluded.relation_draft,
+       parse_error    = excluded.parse_error,
+       turn_count     = excluded.turn_count`,
   ).run(
     payload.session_id,
     payload.chat_id,
@@ -54,6 +57,7 @@ export function upsertDigest(payload: DigestPayload): DigestRow {
     payload.topics ?? null,
     payload.entity_draft ?? null,
     payload.procedural_raw ?? null,
+    payload.relation_draft ?? null,
     payload.parse_error ? 1 : 0,
     payload.turn_count,
   );

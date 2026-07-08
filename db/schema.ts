@@ -109,6 +109,7 @@ export const sessionDigest = sqliteTable(
     topics:         text('topics'),                         // comma-separated; reserved/unpopulated at Track 1
     entity_draft:   text('entity_draft'),                   // JSON text; null on structural/parse-error path
     procedural_raw: text('procedural_raw'),                 // JSON text; null on structural/parse-error path
+    relation_draft: text('relation_draft'),                 // JSON text; null on structural/parse-error path
     parse_error:    integer('parse_error', { mode: 'boolean' }).notNull().default(false),
     turn_count:     integer('turn_count').notNull(),
   },
