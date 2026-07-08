@@ -27,6 +27,8 @@ seed.pragma('foreign_keys = ON');
 migrate(drizzle(seed), { migrationsFolder });
 seed.exec(fs.readFileSync(path.join(migrationsFolder, '0001_fts.sql'), 'utf8'));
 seed.exec(fs.readFileSync(path.join(migrationsFolder, '0003_conversation_fts.sql'), 'utf8'));
+// Track 6 — adds session_digest.relation_draft, which upsertDigest now writes to.
+seed.exec(fs.readFileSync(path.join(migrationsFolder, '0008_relation_draft.sql'), 'utf8'));
 seed.close();
 
 // Bootstrap the API key so route tests can authenticate.

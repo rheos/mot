@@ -40,6 +40,7 @@ const HAND_WRITTEN_MIGRATIONS = [
   '0005_procedural_notes.sql',
   '0006_memory_fts.sql',
   '0007_vec.sql',
+  '0008_relation_draft.sql',
 ];
 
 function applyHandWrittenMigrations(db: DB, migrationsFolder: string): void {
