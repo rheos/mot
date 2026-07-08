@@ -1,10 +1,14 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { setupRouteDb, cleanupTempDb, postBody } from './_helpers';
 
-// AC-PRIVATE (route half) — the private gate enforced end-to-end through the HTTP handlers.
-// API-key-only requests (no session cookie) never see private rows in the list and get 404
-// (not 403) on a private :id. The same requests with a sealed session cookie see everything.
-// The data-layer half is private-gate.test.ts (Prompt 6); this is the session/HTTP layer.
+// AC-PRIVATE (route half) — single-user visibility model through the HTTP handlers.
+// The API key and a session cookie are BOTH privileged credentials (the key only ever goes to
+// Taylor/Rheo), so both see private rows end-to-end; only a fully unauthenticated request is
+// refused. This encodes the 2026-06-21 decision (commit 5240a21, `isSessionRequest` true for any
+// authenticated request): no reason to hide tickets from the key-only path — that IS the LLM/MCP
+// path that helps with those very tickets. The `private` flag is retained (a future gate could
+// consume the data-layer includePrivate param) but gates nothing between authenticated callers.
+// The data-layer half (the includePrivate parameter itself) is private-gate.test.ts.
 
 const auth = await setupRouteDb('private-routes');
 const ticketsRoute = await import('../../app/api/tickets/route');
@@ -34,8 +38,8 @@ function getOne(id: string, cookie?: string): Request {
   });
 }
 
-describe('AC-PRIVATE — private gate through the route handlers', () => {
-  it('hides a private ticket from API-key-only callers (list + 404), shows it to a session', async () => {
+describe('AC-PRIVATE — private visibility through the route handlers', () => {
+  it('shows a private ticket to BOTH an API-key caller and a session (single-user: the key is privileged)', async () => {
     // 1. POST a private ticket with the API key → 201.
     const created = await ticketsRoute.POST(
       post(postBody({ title: 'Sealed', ministry: 'education', private: true })),
@@ -43,17 +47,17 @@ describe('AC-PRIVATE — private gate through the route handlers', () => {
     expect(created.status).toBe(201);
     const t1 = (await created.json()) as { id: string };
 
-    // 2. GET /tickets with API key only (no session) → T1 absent.
+    // 2. GET /tickets with API key only (no session) → T1 PRESENT (the key is privileged).
     const keyList = await ticketsRoute.GET(getList());
     expect(keyList.status).toBe(200);
     const keyBody = (await keyList.json()) as { tickets: { id: string }[] };
-    expect(keyBody.tickets.map((t) => t.id)).not.toContain(t1.id);
+    expect(keyBody.tickets.map((t) => t.id)).toContain(t1.id);
 
-    // 3. GET /tickets/:id with API key only → 404 (NOT 403, no existence leak).
+    // 3. GET /tickets/:id with API key only → 200 (no gate between authenticated callers).
     const keyOne = await ticketIdRoute.GET(getOne(t1.id), { params: { id: t1.id } });
-    expect(keyOne.status).toBe(404);
+    expect(keyOne.status).toBe(200);
 
-    // 4. GET /tickets with a valid session → T1 present.
+    // 4. GET /tickets with a valid session → T1 present (identical visibility).
     const sessList = await ticketsRoute.GET(getList(auth.sessionCookie));
     const sessBody = (await sessList.json()) as { tickets: { id: string }[] };
     expect(sessBody.tickets.map((t) => t.id)).toContain(t1.id);
