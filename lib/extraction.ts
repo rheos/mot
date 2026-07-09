@@ -136,6 +136,18 @@ function passesConfidence(confidence: number): boolean {
   return confidence >= 0.85;
 }
 
+// The 5 canonical entity types. The bot's LLM sometimes emits un-normalised casings
+// ('person', 'fact', 'preference'); storing those verbatim fragments the graph — a `person`
+// "Alex" and a `Person` "Alex" land in different type buckets, so the type-scoped dedup scan
+// never sees them as duplicates AND matchByLabel's typed-then-widen misses across the casing.
+// normalizeEntityType folds any casing back to the canonical type; a value that is not one of the
+// five at all returns null (the entity is skipped rather than stored with a garbage type).
+const CANONICAL_ENTITY_TYPES = ['Person', 'Project', 'Deadline', 'Preference', 'Fact'] as const;
+function normalizeEntityType(raw: unknown): EntityRecord['type'] | null {
+  const t = String(raw ?? '').trim().toLowerCase();
+  return CANONICAL_ENTITY_TYPES.find((c) => c.toLowerCase() === t) ?? null;
+}
+
 // Process the entity_draft JSON text → appendEntity for each item that clears the gate.
 // A malformed entity_draft is logged and skipped (EC-4); it never throws, so procedural_raw
 // still gets its turn.
@@ -159,6 +171,17 @@ function processEntities(digestRow: DigestRow): void {
       );
       continue;
     }
+
+    // Normalise the type casing BEFORE the type-scoped dedup scan + append, so 'person' folds to
+    // 'Person' (and dedup sees casing-variant duplicates). A type outside the canonical 5 is skipped.
+    const normType = normalizeEntityType(item.type);
+    if (normType === null) {
+      console.warn(
+        `[MOT/extraction] entity with unrecognised type "${item.type}" skipped: ${item.label}`,
+      );
+      continue;
+    }
+    item.type = normType;
 
     // Dedup scan: find same-type active entities that are likely duplicates of this label.
     // searchEntities('', type) with an empty q matches all active entities of that type
