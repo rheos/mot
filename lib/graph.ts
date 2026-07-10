@@ -687,11 +687,16 @@ export function searchEntities(
 }
 
 /**
- * BFS traversal from `id` following properties.relations[].target_id edges (FR 9).
+ * BFS traversal from `id` following properties.relations[] edges in BOTH directions (FR 9).
+ * "Related" means connected EITHER way: the traversal follows a node's OUTBOUND edges (its own
+ * relations[].target_id) AND its INBOUND edges (every other active entity whose relations[]
+ * point at this node). This surfaces a canonical node's inbound members too — e.g. the Track 9
+ * resolution worker links member Facts to a canonical node with a Fact→canonical `points_to`
+ * edge, so those Facts are inbound to the canonical node and must count as related.
  *   - hops clamped to max 3 (EC-3); cycle-safe via a visited Set (EC-3).
- *   - rel: when given, only follow edges whose `rel` matches.
+ *   - rel: when given, only follow edges whose `rel` matches — in EITHER direction.
  *   - unconfirmed edges ARE followed (ambient model); confirmed-reached neighbours sort first,
- *     then by entity confidence DESC.
+ *     then by entity confidence DESC (applied to inbound-reached neighbours too).
  *   - total result set capped at 50 entities (AC-6).
  * Returns the collected entities (the starting entity is NOT included), or [] if `id`
  * is not in the graph.
@@ -700,6 +705,21 @@ export function relatedEntities(id: string, rel?: string, hops = 1): EntityRecor
   const all = loadGraph();
   const byId = new Map(all.map((e) => [e.id, e]));
   if (!byId.has(id)) return [];
+
+  // Reverse index, built ONCE per call: target_id → the edges pointing AT it. Lets the inbound
+  // arm of each frontier node be an O(1) lookup instead of rescanning the whole graph per node.
+  const inboundBySource = new Map<
+    string,
+    { sourceId: string; rel: string; confirmed: boolean }[]
+  >();
+  for (const e of all) {
+    for (const edge of e.properties.relations ?? []) {
+      const bucket = inboundBySource.get(edge.target_id);
+      const entry = { sourceId: e.id, rel: edge.rel, confirmed: edge.confirmed };
+      if (bucket) bucket.push(entry);
+      else inboundBySource.set(edge.target_id, [entry]);
+    }
+  }
 
   const maxHops = Math.min(hops, 3);
   const visited = new Set<string>([id]);
@@ -714,18 +734,28 @@ export function relatedEntities(id: string, rel?: string, hops = 1): EntityRecor
     // track whether each neighbour was reached by a confirmed edge so the hop can sort them first.
     const nextById = new Map<string, { node: EntityRecord; confirmed: boolean }>();
 
+    // One neighbour-consider step, shared by the outbound and inbound arms: same rel filter,
+    // visited skip, missing-node skip, and confirmed-upgrade logic in both directions.
+    const consider = (neighbourId: string, edgeRel: string, edgeConfirmed: boolean): void => {
+      if (rel !== undefined && edgeRel !== rel) return;
+      if (visited.has(neighbourId)) return;
+      const target = byId.get(neighbourId);
+      if (!target) return; // edge to a missing/compacted node
+      const prev = nextById.get(target.id);
+      // Keep the strongest reaching-edge: a confirmed edge upgrades a prior unconfirmed reach.
+      if (!prev || (edgeConfirmed === true && !prev.confirmed)) {
+        nextById.set(target.id, { node: target, confirmed: edgeConfirmed === true });
+      }
+    };
+
     for (const node of frontier) {
-      const edges = node.properties.relations ?? [];
-      for (const edge of edges) {
-        if (rel !== undefined && edge.rel !== rel) continue;
-        if (visited.has(edge.target_id)) continue;
-        const target = byId.get(edge.target_id);
-        if (!target) continue; // edge to a missing/compacted node
-        const prev = nextById.get(target.id);
-        // Keep the strongest reaching-edge: a confirmed edge upgrades a prior unconfirmed reach.
-        if (!prev || (edge.confirmed === true && !prev.confirmed)) {
-          nextById.set(target.id, { node: target, confirmed: edge.confirmed === true });
-        }
+      // OUTBOUND: the node's own relations[] (as before).
+      for (const edge of node.properties.relations ?? []) {
+        consider(edge.target_id, edge.rel, edge.confirmed === true);
+      }
+      // INBOUND: every other active entity whose relations[] point AT this node.
+      for (const inEdge of inboundBySource.get(node.id) ?? []) {
+        consider(inEdge.sourceId, inEdge.rel, inEdge.confirmed === true);
       }
     }
 

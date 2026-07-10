@@ -84,12 +84,18 @@ describe('Track 9 Phase 2 — resolution worker (lib/maintainer)', () => {
     const robin = searchEntities('Taylor', 'Person');
     expect(robin).toHaveLength(1);
 
-    // AC-1: the linking pipeline produced ≥5 traversable points_to edges converging on Taylor.
-    // Edge direction is Fact→Taylor (member points_to canonical, per the spec mapping + the closed
-    // vocabulary's subject→object direction), so Taylor is the TARGET: its neighbours are its INBOUND
-    // members (getEntity, which is what entity_related surfaces), and each member reaches Taylor via
-    // the outbound BFS. Both are asserted; the outbound BFS from Taylor is 0 by construction (Taylor
-    // has no outbound edges — the Facts point at it), which is the correct model, not a miss.
+    // AC-1 (literal): entity_related(Taylor) returns ≥5 neighbours. Edge direction is Fact→Taylor
+    // (member points_to canonical, per the spec mapping + the closed vocabulary's subject→object
+    // direction), so the Facts are INBOUND to Taylor. relatedEntities is now bidirectional (Phase 2b),
+    // so traversing from Taylor follows those inbound edges and surfaces every member Fact.
+    const relatedToTaylor = relatedEntities(robin[0].id).map((n) => n.id);
+    expect(relatedToTaylor.length).toBeGreaterThanOrEqual(5);
+    for (const f of facts) {
+      expect(relatedToTaylor).toContain(f.id);
+    }
+
+    // The complements still hold: getEntity's inbound arm sees the ≥5 members, and each member
+    // reaches Taylor via its outbound edge (relatedEntities in the other direction).
     const robinNode = getEntity(robin[0].id)!;
     expect(robinNode.relations.inbound.length).toBeGreaterThanOrEqual(5);
     for (const f of facts) {
