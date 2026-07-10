@@ -32,6 +32,32 @@ vi.mock('../../lib/graph-compact', () => ({
   compactGraph: (p: string) => compactGraph(p),
 }));
 
+// Track 9 — mock the two maintainer workers so the nightly wiring is tested in isolation (no real
+// claude -p, no graph writes). Each is a vi.fn returning a valid worker-status object by default;
+// individual tests override with mockRejectedValueOnce to prove the per-step catch-isolation (AC-10).
+const resolutionWorker = vi.fn(async (_opts: { dryRun: boolean }) => ({
+  last_run: new Date().toISOString(),
+  ok: true,
+  named_nodes_minted: 0,
+  edges_linked: 0,
+  batches_failed: 0,
+  error: null,
+}));
+const dedupWorker = vi.fn(async (_opts: { dryRun: boolean }) => ({
+  last_run: new Date().toISOString(),
+  ok: true,
+  entities_merged: 0,
+  backup_path: null,
+  batches_failed: 0,
+  error: null,
+}));
+vi.mock('../../lib/maintainer', () => ({
+  resolutionWorker: (opts: { dryRun: boolean }) => resolutionWorker(opts),
+  dedupWorker: (opts: { dryRun: boolean }) => dedupWorker(opts),
+  readStatus: vi.fn(),
+  writeStatus: vi.fn(),
+}));
+
 const { scheduleNightly } = await import('../../lib/backup');
 
 async function runNightly(): Promise<void> {
@@ -47,7 +73,27 @@ let errSpy = vi.spyOn(console, 'error');
 beforeEach(() => {
   compactGraph.mockClear();
   compactGraph.mockImplementation(async () => {});
+  resolutionWorker.mockClear();
+  resolutionWorker.mockImplementation(async () => ({
+    last_run: new Date().toISOString(),
+    ok: true,
+    named_nodes_minted: 0,
+    edges_linked: 0,
+    batches_failed: 0,
+    error: null,
+  }));
+  dedupWorker.mockClear();
+  dedupWorker.mockImplementation(async () => ({
+    last_run: new Date().toISOString(),
+    ok: true,
+    entities_merged: 0,
+    backup_path: null,
+    batches_failed: 0,
+    error: null,
+  }));
   delete process.env.MOT_GRAPH_PATH;
+  delete process.env.MAINTAINER_RESOLUTION_DISABLE;
+  delete process.env.MAINTAINER_DEDUP_DISABLE;
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -56,6 +102,8 @@ afterEach(() => {
   logSpy.mockRestore();
   errSpy.mockRestore();
   delete process.env.MOT_GRAPH_PATH;
+  delete process.env.MAINTAINER_RESOLUTION_DISABLE;
+  delete process.env.MAINTAINER_DEDUP_DISABLE;
 });
 
 function loggedLines(): string[] {
@@ -131,5 +179,70 @@ describe('scheduleNightly — nightly maintenance (persistence: no disuse prune)
       lines.some((l) => l.includes('[MOT/nightly] graph compact: skipped (under 5MB threshold)')),
     ).toBe(true);
     expect(compactGraph).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduleNightly — Track 9 Maintainer workers (isolation + disable switches)', () => {
+  // All these tests use the absent-file path so compact takes its skip branch (no real graph
+  // needed); the maintainer steps run regardless of graph size.
+  beforeEach(() => {
+    process.env.MOT_GRAPH_PATH = '/nonexistent/mot-nightly-maint/graph.jsonl';
+  });
+
+  it('AC-10/FR-12: resolution worker failure does NOT block the dedup worker', async () => {
+    resolutionWorker.mockRejectedValueOnce(new Error('resolution boom'));
+
+    await runNightly(); // the per-step catch must isolate it (no throw out of runNightly)
+
+    // dedup still ran despite resolution throwing.
+    expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(dedupWorker).toHaveBeenCalledWith({ dryRun: false });
+    expect(
+      errSpy.mock.calls.some((c) =>
+        String(c[0]).includes('[MOT/nightly] resolution worker failed'),
+      ),
+    ).toBe(true);
+  });
+
+  it('AC-10/FR-12: dedup worker failure is caught and logged, not rethrown', async () => {
+    dedupWorker.mockRejectedValueOnce(new Error('dedup boom'));
+
+    await runNightly(); // completes without throwing
+
+    expect(resolutionWorker).toHaveBeenCalledTimes(1);
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes('[MOT/nightly] dedup worker failed')),
+    ).toBe(true);
+  });
+
+  it('AC-7/FR-14: MAINTAINER_RESOLUTION_DISABLE=1 skips the resolution worker (log line, no call)', async () => {
+    process.env.MAINTAINER_RESOLUTION_DISABLE = '1';
+
+    await runNightly();
+
+    expect(resolutionWorker).not.toHaveBeenCalled();
+    // The dedup worker is unaffected — still runs.
+    expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(
+      loggedLines().some((l) => l.includes('resolution worker disabled — skipping')),
+    ).toBe(true);
+  });
+
+  it('AC-7/FR-14: MAINTAINER_DEDUP_DISABLE=1 skips the dedup worker (log line, no call)', async () => {
+    process.env.MAINTAINER_DEDUP_DISABLE = '1';
+
+    await runNightly();
+
+    expect(dedupWorker).not.toHaveBeenCalled();
+    // The resolution worker is unaffected — still runs.
+    expect(resolutionWorker).toHaveBeenCalledTimes(1);
+    expect(loggedLines().some((l) => l.includes('dedup worker disabled — skipping'))).toBe(true);
+  });
+
+  it('both workers run LIVE (dryRun:false) in the normal nightly path', async () => {
+    await runNightly();
+
+    expect(resolutionWorker).toHaveBeenCalledWith({ dryRun: false });
+    expect(dedupWorker).toHaveBeenCalledWith({ dryRun: false });
   });
 });

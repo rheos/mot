@@ -9,6 +9,7 @@ import { getEntity, searchEntities, relatedEntities, confirmEntity, appendSupers
 import { listNotes, confirmNote } from './procedural';
 import { memoryContext } from './memory-context';
 import { compactGraph } from './graph-compact';
+import { readStatus, resolutionWorker, dedupWorker } from './maintainer';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
 import path from 'node:path';
@@ -544,6 +545,34 @@ export function listMcpTools(): ToolDef[] {
         required: ['slug'],
       },
     },
+    {
+      name: 'maintainer_status',
+      description:
+        'Return the last-run summary for the Track-9 Maintainer workers (resolution + dedup). ' +
+        'Returns a zero-state object (null timestamps) if no pass has run yet.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'maintainer_run',
+      description:
+        'Trigger the Maintainer worker(s) on demand and return the run summary. worker defaults ' +
+        'to "all". dry_run:true runs the LLM identification step but writes nothing (no graph ' +
+        'mutation, no backup, no status file update).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          worker: {
+            type: 'string',
+            enum: ['resolution', 'dedup', 'all'],
+            description: 'Which worker to run. Default: all.',
+          },
+          dry_run: {
+            type: 'boolean',
+            description: 'Run LLM step but write nothing and take no backup. Default: false.',
+          },
+        },
+      },
+    },
   ];
 }
 
@@ -875,6 +904,36 @@ export async function callMcpTool(
 
     case 'topic_thread_summarize':
       return text(summarizeThread(args.slug as string));
+
+    // ── Track-9 Maintainer tools ──────────────────────────────────────────────
+    // Both return text({error}) on failure, NEVER throw — the Track-2/3/4 convention (the route
+    // surfaces a structured { error } with isError:false; callers branch on the field).
+    case 'maintainer_status': {
+      try {
+        return text(readStatus());
+      } catch (e) {
+        return text({ error: String(e) });
+      }
+    }
+
+    case 'maintainer_run': {
+      try {
+        const worker = (args.worker as string | undefined) ?? 'all';
+        const dryRun = (args.dry_run as boolean | undefined) ?? false;
+        // Start from the persisted status so the untouched worker's sub-object is preserved in
+        // the returned payload (each worker also self-persists its own sub-object unless dry-run).
+        const status = readStatus();
+        if (worker === 'resolution' || worker === 'all') {
+          status.resolution = await resolutionWorker({ dryRun });
+        }
+        if (worker === 'dedup' || worker === 'all') {
+          status.dedup = await dedupWorker({ dryRun });
+        }
+        return text(status);
+      } catch (e) {
+        return text({ error: String(e) });
+      }
+    }
 
     default:
       throw new Error(`Unknown tool: ${name}`);

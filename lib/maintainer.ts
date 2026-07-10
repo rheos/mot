@@ -65,6 +65,92 @@ export function identifyViaClaude(prompt: string): unknown {
   return JSON.parse(clean.slice(start, end));
 }
 
+// ── Status file (Phase 4) ──────────────────────────────────────────────────────
+// The observable last-run summary for both workers. Written after every worker run (nightly
+// cron OR on-demand maintainer_run), read by the maintainer_status MCP tool. The file lives
+// beside graph.jsonl and is REGENERABLE (a stale/absent/corrupt file degrades to zero-state,
+// never throws — W4/AC-8) so it is NOT backup-worthy, unlike graph.jsonl.
+
+export interface MaintainerStatus {
+  resolution: ResolutionStatus | ZeroResolution;
+  dedup: DedupStatus | ZeroDedup;
+}
+
+// The zero-state sub-objects have `last_run: null` (no pass has run yet); the live worker
+// statuses have `last_run: string`. A union keeps both assignable without a cast.
+type ZeroResolution = Omit<ResolutionStatus, 'last_run'> & { last_run: null };
+type ZeroDedup = Omit<DedupStatus, 'last_run'> & { last_run: null };
+
+// The all-nulls/zeros/false object returned when no pass has run yet (or the file is
+// unparseable). No entities_retyped field (B4 — single-entity retype deferred).
+function zeroStatus(): MaintainerStatus {
+  return {
+    resolution: {
+      last_run: null,
+      ok: false,
+      named_nodes_minted: 0,
+      edges_linked: 0,
+      batches_failed: 0,
+      error: null,
+    },
+    dedup: {
+      last_run: null,
+      ok: false,
+      entities_merged: 0,
+      backup_path: null,
+      batches_failed: 0,
+      error: null,
+    },
+  };
+}
+
+// The status file path — derived from the SAME directory as the graph file (MOT_GRAPH_PATH's
+// dir in tests/temp; ontology/ in production). Never inside graph.jsonl itself.
+function statusFilePath(): string {
+  const graphPath = process.env.MOT_GRAPH_PATH;
+  const dir = graphPath ? path.dirname(graphPath) : path.join(process.cwd(), 'ontology');
+  return path.join(dir, 'maintainer-status.json');
+}
+
+/**
+ * Crash-atomic status write (W4): write to `<path>.tmp` then rename over the real path — the
+ * same temp-then-rename pattern as scripts/cleanup-entities.ts:139, so a crash mid-write can
+ * never leave a truncated status file. Creates the directory if absent.
+ */
+export function writeStatus(status: MaintainerStatus): void {
+  const file = statusFilePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(status, null, 2));
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * Read the persisted status, or the zero-state object when the file is ABSENT or UNPARSEABLE
+ * (W4/AC-8: a truncated/corrupt file degrades to zero-state, never throws — consistent with
+ * the never-throw MCP convention). Missing sub-objects are back-filled from zero-state so a
+ * partially-written file (only one worker has ever run) still returns a complete shape.
+ */
+export function readStatus(): MaintainerStatus {
+  const file = statusFilePath();
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return zeroStatus(); // absent
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<MaintainerStatus>;
+    const zero = zeroStatus();
+    return {
+      resolution: parsed.resolution ?? zero.resolution,
+      dedup: parsed.dedup ?? zero.dedup,
+    };
+  } catch {
+    return zeroStatus(); // unparseable
+  }
+}
+
 // ── Worker 1: entity resolution ────────────────────────────────────────────────
 
 // FR-5/OQ-3 — how many DISTINCT source entities must describe a named thing before the worker mints
@@ -205,6 +291,7 @@ export function resolutionWorker({
     status.batches_failed += 1;
     status.ok = false;
     status.error = String(err);
+    persistResolutionStatus(status, dryRun);
     return status;
   }
 
@@ -254,7 +341,23 @@ export function resolutionWorker({
     status.edges_linked += result.edgesWritten;
   }
 
+  persistResolutionStatus(status, dryRun);
   return status;
+}
+
+// Persist only the `resolution` sub-object of the status file, folding it over whatever the
+// dedup worker last wrote (read-modify-write so the two workers never clobber each other's
+// sub-object). Skipped in dry-run — a dry-run writes NOTHING (AC-9). Never throws (a status
+// write failure must not fail the worker); logs and moves on.
+function persistResolutionStatus(status: ResolutionStatus, dryRun: boolean): void {
+  if (dryRun) return;
+  try {
+    const current = readStatus();
+    current.resolution = status;
+    writeStatus(current);
+  } catch (e) {
+    console.error('[MOT/maintainer] failed to write resolution status:', e);
+  }
 }
 
 // ── Worker 2: dedup / merge ────────────────────────────────────────────────────
@@ -663,7 +766,21 @@ export function dedupWorker({
     repointEdges(flattenToFinalSurvivors(mergedAwayMap), graphFile);
   }
 
+  persistDedupStatus(status, dryRun);
   return status;
+}
+
+// Persist only the `dedup` sub-object of the status file, folding it over whatever the
+// resolution worker last wrote (read-modify-write). Skipped in dry-run (AC-9). Never throws.
+function persistDedupStatus(status: DedupStatus, dryRun: boolean): void {
+  if (dryRun) return;
+  try {
+    const current = readStatus();
+    current.dedup = status;
+    writeStatus(current);
+  } catch (e) {
+    console.error('[MOT/maintainer] failed to write dedup status:', e);
+  }
 }
 
 /**
