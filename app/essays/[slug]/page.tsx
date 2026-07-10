@@ -25,14 +25,14 @@ export default function EssayPage({ params }: { params: { slug: string } }): Rea
         ← Essays
       </Link>
       <article className="mt-8">
-        <h1 className="font-serif text-3xl leading-tight text-ink">{essay.title}</h1>
+        <h1 className="font-sans text-3xl font-bold leading-tight tracking-tight text-ink">{essay.title}</h1>
         {label ? <p className="mt-2 text-sm text-ink-faint">{label}</p> : null}
         <div className="mt-10">
           {blocks.map((b, i) =>
             b.type === 'hr' ? (
               <hr key={i} className="my-9 border-0 border-t border-hair" />
             ) : (
-              <p key={i} className="mb-5 font-serif text-[1.05rem] leading-[1.75] text-ink-2">
+              <p key={i} className="mb-5 font-sans text-[1.05rem] leading-[1.75] text-ink-2">
                 {b.text}
               </p>
             ),

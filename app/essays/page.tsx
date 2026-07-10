@@ -14,7 +14,7 @@ export default function EssaysIndex(): React.JSX.Element {
   const essays = listEssays();
   return (
     <main className="mx-auto max-w-2xl px-6 py-14">
-      <h1 className="mb-1 font-serif text-2xl text-ink">Essays</h1>
+      <h1 className="mb-1 font-sans text-2xl font-bold tracking-tight text-ink">Essays</h1>
       <p className="mb-10 text-sm text-ink-3">Private drafts. Behind your login, not indexed, not linked.</p>
       <ul className="space-y-6">
         {essays.map((e) => (
