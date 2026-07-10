@@ -391,8 +391,9 @@ export function listMcpTools(): ToolDef[] {
     {
       name: 'entity_related',
       description:
-        'Traverse entity relations from a starting entity. Traversal includes ' +
-        'superseded/expired entities, by design.',
+        'Traverse entity relations from a starting entity. A REACHED node may itself be ' +
+        'superseded/expired (surfaced by design); but a merged-away node\'s own outbound ' +
+        'edges do not contribute — after a dedup merge they are re-pointed to the survivor.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -749,7 +750,10 @@ export async function callMcpTool(
     }
 
     case 'entity_related':
-      // NOTE: relatedEntities traversal includes superseded/expired — intentional.
+      // NOTE: a REACHED node may itself be superseded/expired — intentional (discovery tool).
+      // But a superseded node's OWN outbound edges no longer contribute (Track 9 attachRelations
+      // skips `from.superseded_by !== null`): after a dedup merge those edges are re-pointed to the
+      // survivor, so counting them off the dead node too would double-count the relation.
       return text(relatedEntities(
         args.id as string,
         typeof args.rel === 'string' ? args.rel : undefined,

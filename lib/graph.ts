@@ -275,11 +275,13 @@ function isUnrelatePatch(rec: unknown): rec is UnrelatePatch {
  *     `relate` whose own `confirmed === true` (a manual entity_relate or a compacted-confirmed
  *     edge line). Once true, NEVER cleared by a later automated `relate(confirmed:false)`.
  *   - liveness (`valid_until`) — HUMAN-AUTHORITATIVE. Track expiredAt (starts null): `unrelate`
- *     sets it to the patch ts (human reject); a human affirmation (`confirm_relate` or a
- *     `relate` with confirmed:true) clears it to null; an automated `relate(confirmed:false,
- *     valid_until:null)` never touches it. A PRE-EXPIRED `relate` (confirmed:false but
- *     valid_until non-null — only appendResolvedRelate writes these, for the Track 9 edge
- *     re-point) sets expiredAt to its own valid_until, so the fold reads expiry off the relate.
+ *     sets it to the patch ts (human reject); a `confirm_relate`, or a LIVE `relate` with
+ *     confirmed:true AND valid_until:null, clears it to null; an automated
+ *     `relate(confirmed:false, valid_until:null)` never touches it. A PRE-EXPIRED `relate`
+ *     (valid_until non-null — only appendResolvedRelate writes these, for the Track 9 edge
+ *     re-point) sets expiredAt to its own valid_until, and its valid_until WINS regardless of
+ *     `confirmed` — a confirmed-then-rejected edge (relate → confirm_relate → unrelate) folds to
+ *     confirmed:true + expired, and the re-point must preserve the rejection, not resurrect it live.
  *   - `confidence` / `source` / `valid_from` / `ts` — last-write from the highest-`ts` `relate`.
  * A triple seen only in a confirm_relate/unrelate with no establishing relate is dropped
  * (no base to attach to). Returns one resolved patch per triple, BOTH live (valid_until:null)
@@ -353,16 +355,21 @@ export function resolveEdges(
         source = r.source;
         validFrom = r.valid_from;
         latestTs = r.ts;
-        if (r.confirmed === true) {
-          confirmed = true; // human affirmation via manual / compacted-confirmed relate
-          expiredAt = null; // human re-asserts liveness
-        } else if (r.valid_until !== null) {
+        if (r.valid_until !== null) {
           // A PRE-EXPIRED relate line (Track 9 appendResolvedRelate — the dedup edge re-point folds a
           // human unrelate into one resolved relate carrying the expiry verbatim). appendRelate always
           // writes valid_until:null, so ONLY a resolved-relate line reaches this branch. Honour it: the
           // fold reads liveness off the relate itself, so the survivor edge folds back EXPIRED without a
           // companion unrelate (which would be dropped for lacking a base relate on the survivor triple).
+          // A resolved relate can be BOTH confirmed:true AND expired (a confirmed-then-rejected edge:
+          // relate → confirm_relate → unrelate folds to confirmed:true, valid_until=unrelate.ts). Its own
+          // valid_until MUST win regardless of confirmed, else the re-point resurrects a rejected edge
+          // LIVE and the human's rejection is lost (EC-5 confirmed+rejected case).
           expiredAt = r.valid_until;
+          if (r.confirmed === true) confirmed = true; // still latch confirmed
+        } else if (r.confirmed === true) {
+          confirmed = true; // human affirmation via manual / compacted-confirmed relate
+          expiredAt = null; // a live confirmed relate re-asserts liveness
         }
         // an automated relate(confirmed:false, valid_until:null) refreshes candidate fields only
       } else if (ev.kind === 'confirm_relate') {

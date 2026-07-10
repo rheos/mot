@@ -189,6 +189,55 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
     expect(edge!.confirmed).toBe(true); // … and CONFIRMED (the affirmation carried over)
   });
 
+  it('AC-6d / EC-5 (confirmed+rejected) — a CONFIRMED-then-REJECTED edge stays EXPIRED across a merge', () => {
+    // The sub-case AC-6a missed: an edge a human first CONFIRMED (confirm_relate) and THEN
+    // REJECTED (unrelate) folds to confirmed:true AND valid_until=unrelate.ts. appendResolvedRelate
+    // writes that one resolved patch (confirmed:true, valid_until non-null) onto the survivor triple.
+    // The re-fold on loadGraph() must honour the pre-expired valid_until REGARDLESS of confirmed —
+    // else the survivor edge resurrects LIVE and the human's rejection is silently lost.
+    resetGraph();
+    const A = seedEntity('Fact', 'A-dup');
+    const B = seedEntity('Person', 'B-survivor');
+    const C = seedEntity('Fact', 'C-target');
+    appendRelate(A.id, 'points_to', C.id, 0.9, 'session:s', false);
+    appendConfirmRelate(A.id, 'points_to', C.id); // human affirms …
+    appendUnrelate(A.id, 'points_to', C.id); //     … then human REJECTS. Fold: confirmed+expired.
+
+    repointEdges(A.id, B.id, graphFile);
+
+    // A fresh loadGraph() must fold the survivor edge B→C EXPIRED — NOT live.
+    const active = loadGraph();
+    const b = active.find((e) => e.id === B.id)!;
+    const liveToC = (b.properties.relations ?? []).some(
+      (r) => r.rel === 'points_to' && r.target_id === C.id,
+    );
+    expect(liveToC).toBe(false); // the rejection survived even though the edge was once confirmed
+    // relatedEntities(B) must not surface C via the rejected edge.
+    expect(relatedEntities(B.id).map((n) => n.id)).not.toContain(C.id);
+  });
+
+  it('AC-6e — a CONFIRMED-and-LIVE edge stays CONFIRMED + live across a merge (mirror of AC-6d)', () => {
+    // The confirmed:true + valid_until:null case must still fold back LIVE + confirmed — proving the
+    // fix does not over-expire a confirmed edge that was never rejected.
+    resetGraph();
+    const A = seedEntity('Fact', 'A-dup');
+    const B = seedEntity('Person', 'B-survivor');
+    const C = seedEntity('Fact', 'C-target');
+    appendRelate(A.id, 'points_to', C.id, 0.9, 'session:s', false);
+    appendConfirmRelate(A.id, 'points_to', C.id); // human affirms, no later unrelate
+
+    repointEdges(A.id, B.id, graphFile);
+
+    const active = loadGraph();
+    const b = active.find((e) => e.id === B.id)!;
+    const edge = (b.properties.relations ?? []).find(
+      (r) => r.rel === 'points_to' && r.target_id === C.id,
+    );
+    expect(edge).toBeDefined(); // still live …
+    expect(edge!.confirmed).toBe(true); // … and CONFIRMED
+    expect(relatedEntities(B.id).map((n) => n.id)).toContain(C.id);
+  });
+
   it('AC-6c / EC-11 / B2 — a re-point that self-loops writes NO relate line', () => {
     resetGraph();
     const A = seedEntity('Fact', 'A-dup');
