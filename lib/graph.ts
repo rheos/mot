@@ -22,7 +22,8 @@ export interface EntityRecord {
   type: 'Person' | 'Project' | 'Deadline' | 'Preference' | 'Fact';
   label: string;
   properties: {
-    // OQ-A (Track 6): `confirmed` is REQUIRED so the BFS can filter unconfirmed edges in-place
+    // OQ-A (Track 6): `confirmed` is carried on each edge so the BFS can PREFER confirmed edges
+    // (ambient model — unconfirmed edges are still followed, confirmed ones merely sort first)
     // and the browser can show a Confirm button without a second return channel. The fold
     // (attachRelations) rebuilds this array wholesale from relate patches — any value stored
     // inline on an entity record is ignored (W3).
@@ -689,7 +690,8 @@ export function searchEntities(
  * BFS traversal from `id` following properties.relations[].target_id edges (FR 9).
  *   - hops clamped to max 3 (EC-3); cycle-safe via a visited Set (EC-3).
  *   - rel: when given, only follow edges whose `rel` matches.
- *   - within each hop, neighbours are sorted by confidence DESC.
+ *   - unconfirmed edges ARE followed (ambient model); confirmed-reached neighbours sort first,
+ *     then by entity confidence DESC.
  *   - total result set capped at 50 entities (AC-6).
  * Returns the collected entities (the starting entity is NOT included), or [] if `id`
  * is not in the graph.
@@ -706,22 +708,31 @@ export function relatedEntities(id: string, rel?: string, hops = 1): EntityRecor
   let frontier: EntityRecord[] = [byId.get(id)!];
 
   for (let hop = 0; hop < maxHops; hop++) {
-    const nextById = new Map<string, EntityRecord>();
+    // Ambient model (ratified 2026-07-08): memory is used BY DEFAULT, and confirmation is a
+    // correction surface, not a gate. So the BFS FOLLOWS unconfirmed edges too — it does not
+    // drop them (the old FR7 confirmed-only skip is gone). Confirmed edges are merely PREFERRED:
+    // track whether each neighbour was reached by a confirmed edge so the hop can sort them first.
+    const nextById = new Map<string, { node: EntityRecord; confirmed: boolean }>();
 
     for (const node of frontier) {
       const edges = node.properties.relations ?? [];
       for (const edge of edges) {
-        if (edge.confirmed !== true) continue; // FR7 — confirmed-only BFS (Track 6)
         if (rel !== undefined && edge.rel !== rel) continue;
         if (visited.has(edge.target_id)) continue;
         const target = byId.get(edge.target_id);
         if (!target) continue; // edge to a missing/compacted node
-        nextById.set(target.id, target);
+        const prev = nextById.get(target.id);
+        // Keep the strongest reaching-edge: a confirmed edge upgrades a prior unconfirmed reach.
+        if (!prev || (edge.confirmed === true && !prev.confirmed)) {
+          nextById.set(target.id, { node: target, confirmed: edge.confirmed === true });
+        }
       }
     }
 
-    // Sort this hop's newly-reached neighbours by confidence DESC before recording them.
-    const nextNodes = [...nextById.values()].sort((a, b) => b.confidence - a.confidence);
+    // Sort this hop's neighbours: confirmed-reached first, then entity confidence DESC.
+    const nextNodes = [...nextById.values()]
+      .sort((a, b) => Number(b.confirmed) - Number(a.confirmed) || b.node.confidence - a.node.confidence)
+      .map((x) => x.node);
 
     for (const node of nextNodes) {
       if (visited.has(node.id)) continue; // a closer hop already claimed it

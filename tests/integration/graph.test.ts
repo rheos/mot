@@ -356,14 +356,32 @@ describe('Track 6 — edge core (lib/graph)', () => {
     expect(relationsOf(from)).toContainEqual({ rel: 'child_of', target_id: to, confirmed: true });
   });
 
-  it('AC-3: relatedEntities is non-empty for a confirmed edge, [] when the only edge is confirmed:false', () => {
+  it('AC-3: relatedEntities follows BOTH confirmed and unconfirmed edges (ambient model)', () => {
     const { from, to } = seedPair();
     appendRelate(from, 'child_of', to, 0.9, 'manual', true);
     expect(relatedEntities(from).map((e) => e.id)).toContain(to);
 
+    // Ambient model (ratified 2026-07-08): an unconfirmed edge is ALSO traversed — memory is used
+    // by default; confirmation is a correction surface, not a gate. (Was [] under the old FR7
+    // confirmed-only BFS.)
     const only = seedPair();
     appendRelate(only.from, 'child_of', only.to, 0.9, 'session:s', false);
-    expect(relatedEntities(only.from)).toEqual([]);
+    expect(relatedEntities(only.from).map((e) => e.id)).toContain(only.to);
+  });
+
+  it('AC-3b: confirmed-reached neighbours sort before unconfirmed ones (preference, not gate)', () => {
+    const root = appendEntity(entityInput({ label: 'root' }));
+    // Unconfirmed neighbour with HIGHER entity confidence...
+    const viaUnconf = appendEntity(entityInput({ label: 'via-unconfirmed', confidence: 0.99 }));
+    // ...confirmed neighbour with LOWER entity confidence.
+    const viaConf = appendEntity(entityInput({ label: 'via-confirmed', confidence: 0.5 }));
+    appendRelate(root.id, 'works_on', viaUnconf.id, 0.9, 'session:s', false);
+    appendRelate(root.id, 'works_on', viaConf.id, 0.9, 'manual', true);
+    const ids = relatedEntities(root.id).map((e) => e.id);
+    expect(ids).toContain(viaUnconf.id);
+    expect(ids).toContain(viaConf.id);
+    // Confirmed-reached sorts first despite lower entity confidence — preference beats the tiebreak.
+    expect(ids.indexOf(viaConf.id)).toBeLessThan(ids.indexOf(viaUnconf.id));
   });
 
   it('AC-4: a manual confirmed edge is reflected in relatedEntities', () => {
