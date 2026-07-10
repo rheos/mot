@@ -21,9 +21,13 @@ const nextConfig = {
   // routes /_next/* asset URLs through the same prefix so they resolve behind the proxy.
   basePath,
   assetPrefix: basePath || undefined,
-  // Self-contained server bundle (.next/standalone) so the app can ship without the full
-  // node_modules tree — the production deploy runs `node .next/standalone/server.js`.
-  output: 'standalone',
+  // NO standalone output. Production runs `next start` (systemd mot.service:
+  // ExecStart=.../next start), which is INCOMPATIBLE with `output: 'standalone'` — that pairing
+  // silently fails to register newly-added routes (Next logs "next start does not work with
+  // output: standalone"), so old pages serve but a new route 404s. The box gets full node_modules
+  // from the deploy's `npm install`, so the self-contained bundle bought nothing here anyway.
+  // If this is ever switched back to standalone, the ExecStart MUST switch to
+  // `node .next/standalone/server.js` and the deploy MUST copy .next/static + public into it.
   experimental: {
     // Native modules — keep them external to the server bundle so Next does not try to
     // trace/bundle their .node binaries. better-sqlite3 (DB) and @node-rs/argon2 (password +
