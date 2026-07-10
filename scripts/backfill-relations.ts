@@ -188,7 +188,7 @@ export interface LinkResult {
 // sidesteps the ambiguity entirely.
 export function linkRelationDraft(
   relationDraftJson: string,
-  sessionId: string,
+  source: string,
   index: EntityRecord[],
   opts: { dryRun: boolean; create: boolean; seenEdges: Set<string> },
 ): LinkResult {
@@ -199,7 +199,7 @@ export function linkRelationDraft(
   try {
     items = JSON.parse(relationDraftJson) as BotRelationDraftItem[];
   } catch {
-    out.skipped.push({ reason: 'parse-error', detail: sessionId });
+    out.skipped.push({ reason: 'parse-error', detail: source });
     return out;
   }
   if (!Array.isArray(items)) return out;
@@ -207,14 +207,14 @@ export function linkRelationDraft(
   const createEntity = (type: EntityType, label: string, confidence: number): EntityRecord => {
     if (opts.dryRun) {
       return {
-        id: `dry-${sessionId}-${index.length}`,
+        id: `dry-run-${index.length}`,
         type,
         label,
         properties: {},
         valid_from: now,
         valid_until: null,
         confidence,
-        source: `session:${sessionId}`,
+        source,
         superseded_by: null,
         confirmed: false,
       };
@@ -226,7 +226,7 @@ export function linkRelationDraft(
       valid_from: now,
       valid_until: null,
       confidence,
-      source: `session:${sessionId}`,
+      source,
       superseded_by: null,
       confirmed: false,
     });
@@ -282,7 +282,7 @@ export function linkRelationDraft(
     }
     opts.seenEdges.add(ek);
     if (!opts.dryRun) {
-      appendRelate(fromId, item.rel, toId, item.confidence, `session:${sessionId}`, false);
+      appendRelate(fromId, item.rel, toId, item.confidence, source, false);
     }
     out.edgesWritten++;
   }
@@ -319,7 +319,7 @@ async function main(argv: string[]): Promise<void> {
     try {
       const transcript = turns.map((t) => `${t.role.toUpperCase()} [${t.ts}]: ${t.content}`).join('\n');
       const relation_draft = extractRelationDraft(transcript);
-      const res = linkRelationDraft(relation_draft, sid, index, { dryRun, create, seenEdges });
+      const res = linkRelationDraft(relation_draft, `session:${sid}`, index, { dryRun, create, seenEdges });
 
       processed++;
       edgesTotal += res.edgesWritten;

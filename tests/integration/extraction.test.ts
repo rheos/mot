@@ -22,6 +22,10 @@ const { migrate_db, getDb } = await import('../../db/client');
 const { runExtraction, TEST_DIGEST_FIXTURE } = await import('../../lib/extraction');
 const { searchEntities, appendEntity } = await import('../../lib/graph');
 const { levenshtein } = await import('../../lib/levenshtein');
+// Phase 1 (FR-6): the resolve-or-create linker, called directly in the backfill-caller regression guard.
+const { linkRelationDraft } = await import('../../scripts/backfill-relations');
+type BotRelationDraftItem = import('../../lib/extraction').BotRelationDraftItem;
+type EntityRecord = import('../../lib/graph').EntityRecord;
 
 const SESSION_ID = 's-extract';
 const CHAT_ID = 'c1';
@@ -311,11 +315,13 @@ describe('levenshtein edit distance (lib/levenshtein)', () => {
   });
 });
 
-// Track 6 Phase 2 — processRelations + matchByLabel. Driven end-to-end through runExtraction
-// (processRelations is module-private), so the guard at extraction.ts and the whole resolve path
-// are exercised. Each case wants a clean graph so matchByLabel's candidate pool is deterministic;
-// this block points MOT_GRAPH_PATH at its own dir and resets the graph before each case.
-describe('Track 6 Phase 2 — processRelations candidate edges', () => {
+// Track 6 Phase 2 → Track 9 Phase 1 — processRelations. Driven end-to-end through runExtraction
+// (processRelations is module-private), so the guard at extraction.ts and the whole resolve-or-create
+// path are exercised. FR-6 promoted this from resolve-or-SKIP (matchByLabel) to resolve-or-CREATE
+// (linkRelationDraft, create:true): an unresolved endpoint is MINTED, not dropped. Each case wants a
+// clean graph so resolution is deterministic; this block points MOT_GRAPH_PATH at its own dir and
+// resets the graph before each case.
+describe('Track 6 Phase 2 / Track 9 Phase 1 — processRelations resolve-or-create edges', () => {
   let relDir: string;
   let relGraph: string;
   const prevGraphPath = process.env.MOT_GRAPH_PATH;
@@ -337,7 +343,8 @@ describe('Track 6 Phase 2 — processRelations candidate edges', () => {
     fs.writeFileSync(relGraph, '');
   }
 
-  // Seed a confirmed active entity so matchByLabel resolves it. Returns the generated id.
+  // Seed a confirmed active entity so linkRelationDraft's resolveOrCreate finds it by exact label.
+  // Returns the generated id.
   function seedEntity(
     label: string,
     type: 'Person' | 'Project' | 'Deadline' | 'Preference' | 'Fact' = 'Person',
@@ -411,37 +418,43 @@ describe('Track 6 Phase 2 — processRelations candidate edges', () => {
     expect(patch.source).toBe('session:s-rel');
   });
 
-  it('AC-7: from_label resolves to zero entities → no patch, warn names the label', async () => {
+  // FR-6 (resolve-or-CREATE): an unresolved from_label is MINTED as a named node and linked, not
+  // dropped. (Pre-FR-6 this test asserted "→ no patch"; the live path now grows the graph.)
+  it('FR-6: from_label resolves to zero entities → mints the node and links', async () => {
     resetGraph();
-    seedEntity('SampleApp', 'Project');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sampleapp = seedEntity('SampleApp', 'Project');
 
     await runRelationDraft([
       { from_label: 'Nonexistent Person', from_type: 'Person', rel: 'works_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.95 },
     ]);
 
-    expect(relatePatchCount()).toBe(0);
-    expect(warn.mock.calls.flat().join(' ')).toContain('Nonexistent Person');
-    warn.mockRestore();
+    // The edge is written and the missing endpoint is minted (confirmed:false).
+    const patch = theRelatePatch();
+    expect(patch.to).toBe(sampleapp);
+    const minted = searchEntities('Nonexistent Person', 'Person');
+    expect(minted).toHaveLength(1);
+    expect(minted[0].confirmed).toBe(false);
+    expect(patch.from).toBe(minted[0].id);
   });
 
-  it('AC-8: from_label resolves to two entities → no patch, warn names label + count', async () => {
+  // FR-6: exact-label match resolves to the FIRST match (index.find), so a pre-existing node is
+  // reused rather than duplicated — even when two same-label nodes exist, no new node is minted.
+  // (Pre-FR-6 this asserted "→ no patch" on the ambiguity; resolve-or-create takes the first.)
+  it('FR-6: from_label with a pre-existing exact match resolves to it (no mint)', async () => {
     resetGraph();
-    // Two active Person entities with the SAME label — exact-match ambiguity.
+    const robin = seedEntity('Taylor', 'Person');
     seedEntity('Taylor', 'Person');
-    seedEntity('Taylor', 'Person');
-    seedEntity('SampleApp', 'Project');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sampleapp = seedEntity('SampleApp', 'Project');
 
     await runRelationDraft([
       { from_label: 'Taylor', from_type: 'Person', rel: 'works_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.95 },
     ]);
 
-    expect(relatePatchCount()).toBe(0);
-    const msg = warn.mock.calls.flat().join(' ');
-    expect(msg).toContain('Taylor');
-    expect(msg).toContain('2');
-    warn.mockRestore();
+    const patch = theRelatePatch();
+    expect(patch.from).toBe(robin); // first exact match reused
+    expect(patch.to).toBe(sampleapp);
+    // Still exactly two 'Taylor' Person nodes — no third was minted.
+    expect(searchEntities('Taylor', 'Person')).toHaveLength(2);
   });
 
   it('AC-9: malformed relation_draft warns, does not throw, entity pass unaffected (EC5)', async () => {
@@ -527,21 +540,25 @@ describe('Track 6 Phase 2 — processRelations candidate edges', () => {
     expect(patch.to).toBe(robin);
   });
 
-  it('type-hint omitted: same label two types → ambiguous, skip (AC-8 path)', async () => {
+  // FR-6: type-hint omitted, two 'SampleApp' nodes. resolveOrCreate falls back to fromType 'Fact'
+  // (belongs_to has no REL_TYPE_HINT) and takes the same-type exact match → the Fact 'SampleApp'.
+  // (Pre-FR-6 this was an ambiguous skip; resolve-or-create resolves it deterministically.)
+  it('FR-6: type-hint omitted, same label two types → resolves same-type node, links', async () => {
     resetGraph();
     seedEntity('SampleApp', 'Project');
     seedEntity('SampleApp', 'Fact');
-    seedEntity('Taylor', 'Person');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const factNutri = searchEntities('SampleApp', 'Fact')[0].id;
+    const robin = seedEntity('Taylor', 'Person');
 
-    // No from_type → type-agnostic scan → both 'SampleApp' nodes exact-match → ambiguous.
     await runRelationDraft([
       { from_label: 'SampleApp', rel: 'belongs_to', to_label: 'Taylor', to_type: 'Person', confidence: 0.9 },
     ]);
 
-    expect(relatePatchCount()).toBe(0);
-    expect(warn.mock.calls.flat().join(' ')).toContain('SampleApp');
-    warn.mockRestore();
+    const patch = theRelatePatch();
+    expect(patch.from).toBe(factNutri); // fromType defaults to Fact → same-type match
+    expect(patch.to).toBe(robin);
+    // No new 'SampleApp' minted — still exactly the two seeded.
+    expect(searchEntities('SampleApp').length).toBe(2);
   });
 
   it('AC-19 (W1): mismatched type hint still resolves via typed-then-widen', async () => {
@@ -560,21 +577,26 @@ describe('Track 6 Phase 2 — processRelations candidate edges', () => {
     expect(patch.to).toBe(box);
   });
 
-  it('AC-20 (W2): Levenshtein-1 decoy with no exact match does NOT resolve', async () => {
+  // FR-6 (W2 preserved): 'mot' is Levenshtein-1 from stored 'moi', but resolution is EXACT-only —
+  // 'mot' must NOT wire to 'moi'. Under resolve-or-create it mints a DISTINCT 'mot' node and links
+  // there instead of dropping the edge. The no-fuzzy-match invariant (the original 0-edge bug guard)
+  // is what keeps 'mot' and 'moi' separate. (Pre-FR-6 this asserted "→ no patch".)
+  it('FR-6 / W2: Levenshtein-1 decoy does NOT resolve to the near node — mints a distinct node', async () => {
     resetGraph();
-    seedEntity('moi', 'Project');
-    seedEntity('SampleApp', 'Project');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const moi = seedEntity('moi', 'Project');
+    const sampleapp = seedEntity('SampleApp', 'Project');
 
-    // 'mot' is distance 1 from stored 'moi' but there is NO exact match and prefix/suffix
-    // containment does not fire (neither is a prefix/suffix of the other) → unresolved, no patch.
     await runRelationDraft([
       { from_label: 'mot', from_type: 'Project', rel: 'depends_on', to_label: 'SampleApp', to_type: 'Project', confidence: 0.95 },
     ]);
 
-    expect(relatePatchCount()).toBe(0);
-    expect(warn.mock.calls.flat().join(' ')).toContain('mot');
-    warn.mockRestore();
+    const patch = theRelatePatch();
+    expect(patch.to).toBe(sampleapp);
+    // 'mot' was minted as its own node — it did NOT collapse into the 'moi' decoy.
+    const mot = searchEntities('mot', 'Project');
+    expect(mot).toHaveLength(1);
+    expect(patch.from).toBe(mot[0].id);
+    expect(patch.from).not.toBe(moi);
   });
 
   it('infra-edge fixture: a complete owns item appends exactly one relate patch', async () => {
@@ -591,5 +613,146 @@ describe('Track 6 Phase 2 — processRelations candidate edges', () => {
     expect(patch.rel).toBe('owns');
     expect(patch.from).toBe(robin);
     expect(patch.to).toBe(sampleapp);
+  });
+});
+
+// Track 9 Phase 1 (FR-6) — the resolve-or-CREATE promotion of processRelations. The three cases the
+// Phase 1 spec names: (1) an unresolved endpoint MINTS + links (was a 0-edge drop); (2) an exact-label
+// endpoint resolves without minting a duplicate; (3) the backfill caller's create:false path still
+// resolves-only + skips-on-miss (regression guard on the generalized `source` signature).
+describe('Track 9 Phase 1 — FR-6 resolve-or-create in processRelations', () => {
+  let p1Dir: string;
+  let p1Graph: string;
+  const prevGraphPath = process.env.MOT_GRAPH_PATH;
+
+  beforeAll(() => {
+    p1Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-p1-'));
+    p1Graph = path.join(p1Dir, 'graph.jsonl');
+    process.env.MOT_GRAPH_PATH = p1Graph;
+  });
+
+  afterAll(() => {
+    fs.rmSync(p1Dir, { recursive: true, force: true });
+    if (prevGraphPath === undefined) delete process.env.MOT_GRAPH_PATH;
+    else process.env.MOT_GRAPH_PATH = prevGraphPath;
+  });
+
+  function resetGraph(): void {
+    fs.mkdirSync(path.dirname(p1Graph), { recursive: true });
+    fs.writeFileSync(p1Graph, '');
+  }
+
+  function seedEntity(
+    label: string,
+    type: 'Person' | 'Project' | 'Deadline' | 'Preference' | 'Fact' = 'Person',
+  ): string {
+    return appendEntity({
+      type,
+      label,
+      properties: {},
+      confidence: 1.0,
+      confirmed: true,
+      source: 'manual',
+      valid_from: '2026-06-01T00:00:00.000Z',
+      valid_until: null,
+      superseded_by: null,
+    }).id;
+  }
+
+  // All op:'relate' patch lines currently in the graph file.
+  function relatePatches(): Array<{ from: string; rel: string; to: string }> {
+    if (!fs.existsSync(p1Graph)) return [];
+    return fs
+      .readFileSync(p1Graph, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.op === 'relate');
+  }
+
+  async function runRelationDraft(items: unknown): Promise<void> {
+    await runExtraction(
+      digestRow({
+        session_id: 's-p1',
+        entity_draft: null,
+        procedural_raw: null,
+        relation_draft: JSON.stringify(items),
+      }),
+    );
+  }
+
+  it('FR-6: an unresolved endpoint mints a confirmed:false node (source session:) and links it', async () => {
+    resetGraph();
+    const sampleapp = seedEntity('SampleApp', 'Project'); // 'Taylor' deliberately absent
+
+    await runRelationDraft([
+      { from_label: 'Taylor', rel: 'works_on', to_label: 'SampleApp', confidence: 0.9, from_type: 'Person', to_type: 'Project' },
+    ]);
+
+    // (a) A 'Taylor' Person node was minted — unconfirmed, sourced to the live session.
+    const robins = searchEntities('Taylor', 'Person');
+    expect(robins).toHaveLength(1);
+    expect(robins[0].confirmed).toBe(false);
+    expect(robins[0].source.startsWith('session:')).toBe(true);
+
+    // (b) A relate op line links Taylor → SampleApp (was 0 edges pre-FR-6).
+    const edges = relatePatches();
+    expect(edges).toHaveLength(1);
+    expect(edges[0].from).toBe(robins[0].id);
+    expect(edges[0].to).toBe(sampleapp);
+    expect(edges[0].rel).toBe('works_on');
+  });
+
+  it('FR-6: an exact-label endpoint resolves without minting a duplicate', async () => {
+    resetGraph();
+    const robin = seedEntity('Taylor', 'Person'); // pre-seeded this time
+    seedEntity('SampleApp', 'Project');
+
+    await runRelationDraft([
+      { from_label: 'Taylor', rel: 'works_on', to_label: 'SampleApp', confidence: 0.9, from_type: 'Person', to_type: 'Project' },
+    ]);
+
+    // Exactly one 'Taylor' Person — the seeded one was reused, no duplicate minted.
+    const robins = searchEntities('Taylor', 'Person');
+    expect(robins).toHaveLength(1);
+    expect(robins[0].id).toBe(robin);
+    // And the edge points at the pre-existing node.
+    expect(relatePatches()[0].from).toBe(robin);
+  });
+
+  it('backfill caller regression: create:false still resolves-only and skips on a miss (no mint)', () => {
+    resetGraph();
+    // A pre-seeded index with only SampleApp; 'Taylor' is absent, so the endpoint misses.
+    const index: EntityRecord[] = [
+      {
+        id: 'sampleapp-1',
+        type: 'Project',
+        label: 'SampleApp',
+        properties: {},
+        confidence: 1.0,
+        confirmed: true,
+        source: 'manual',
+        valid_from: '2026-06-01T00:00:00.000Z',
+        valid_until: null,
+        superseded_by: null,
+      },
+    ];
+    const items: BotRelationDraftItem[] = [
+      { from_label: 'Taylor', rel: 'works_on', to_label: 'SampleApp', confidence: 0.9, from_type: 'Person', to_type: 'Project' },
+    ];
+
+    // The generalized `source` param carries the backfill's session provenance unchanged.
+    const result = linkRelationDraft(JSON.stringify(items), 'session:test-sid', index, {
+      dryRun: false,
+      create: false,
+      seenEdges: new Set<string>(),
+    });
+
+    // create:false → the unresolved 'Taylor' endpoint is skipped, nothing minted, no edge written.
+    expect(result.entitiesCreated).toHaveLength(0);
+    expect(result.edgesWritten).toBe(0);
+    expect(result.skipped.some((s) => s.reason === 'from-unresolved')).toBe(true);
+    // The direct call with create:false writes nothing to the graph file either.
+    expect(relatePatches()).toHaveLength(0);
   });
 });
