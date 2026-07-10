@@ -33,11 +33,11 @@
 // re-run only fills sessions that missed the first pass. (The prior run wrote 0 relate patches, so a
 // re-run reprocesses everything.)
 
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, migrate_db } from '../db/client';
 import { EXTRACTION_PROMPT_GUIDANCE, type BotRelationDraftItem } from '../lib/extraction';
+import { identifyViaClaude } from '../lib/maintainer';
 import {
   appendEntity,
   appendRelate,
@@ -129,7 +129,9 @@ function loadSessions(): Map<string, { chatId: string; turns: Turn[] }> {
 }
 
 // Run claude -p over one transcript and return relation_draft as a JSON-text array (string).
-// Mirrors the bot's run_digest invocation (sonnet, no tools) + balanced-brace JSON extraction.
+// Mirrors the bot's run_digest invocation (sonnet, no tools). The spawn + balanced-brace JSON
+// extraction lives in identifyViaClaude (lib/maintainer) — ONE copy of that logic in the repo; this
+// builds the prompt and pulls `.relation_draft` out of the returned object.
 function extractRelationDraft(transcript: string): string {
   const prompt =
     EXTRACTION_PROMPT_GUIDANCE +
@@ -139,36 +141,8 @@ function extractRelationDraft(transcript: string): string {
     'markdown fences.\n\nCONVERSATION:\n' +
     transcript;
 
-  const res = spawnSync('claude', ['-p', prompt, '--model', 'claude-sonnet-4-6', '--allowedTools', ''], {
-    encoding: 'utf8',
-    timeout: 120_000,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (res.status !== 0) {
-    throw new Error(`claude -p exited ${res.status}: ${(res.stderr || '').slice(0, 300)}`);
-  }
-  const raw = (res.stdout || '').trim();
-  const clean = raw.replace(/^```json\s*|^```\s*|\s*```$/gm, '').trim();
-  const start = clean.indexOf('{');
-  if (start < 0) return '[]';
-  let depth = 0;
-  let end = start;
-  for (let i = start; i < clean.length; i++) {
-    if (clean[i] === '{') depth++;
-    else if (clean[i] === '}') {
-      depth--;
-      if (depth === 0) {
-        end = i + 1;
-        break;
-      }
-    }
-  }
-  try {
-    const data = JSON.parse(clean.slice(start, end)) as { relation_draft?: unknown };
-    return JSON.stringify(data.relation_draft ?? []);
-  } catch {
-    return '[]';
-  }
+  const data = identifyViaClaude(prompt) as { relation_draft?: unknown } | null;
+  return JSON.stringify(data?.relation_draft ?? []);
 }
 
 export interface LinkResult {
