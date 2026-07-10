@@ -125,6 +125,23 @@ export function appendEntity(rec: Omit<EntityRecord, 'id'>): EntityRecord {
 }
 
 /**
+ * Append a FULL entity record VERBATIM, keeping its existing `id` (Track 9 dedup property union).
+ *
+ * Unlike appendEntity (which mints a fresh id), this re-writes an existing entity in place: loadGraph
+ * folds records by id last-write-wins (`entities.set(rec.id, rec)`), so a later same-id line overrides
+ * the earlier one on read. Used by the dedup worker to persist the survivor's unioned properties after
+ * a merge — the append-only equivalent of the cleanup-entities atomic rewrite's in-place mutation.
+ * The caller strips properties.relations first (edges are re-folded from patches at read time).
+ * Fires the same fire-and-forget vec re-index as appendEntity (the label/properties text changed).
+ */
+export function appendEntityRecord(rec: EntityRecord): void {
+  const file = graphPath();
+  ensureDir(file);
+  fs.appendFileSync(file, JSON.stringify(rec) + '\n');
+  indexAsync(getDb(), 'entity_vec', rec.id, rec.label + ' ' + JSON.stringify(rec.properties));
+}
+
+/**
  * Append a supersession patch marking `oldId` as superseded by `newId`. Same
  * single-syscall append pattern as appendEntity.
  */
@@ -196,6 +213,31 @@ export function appendUnrelate(from: string, rel: string, to: string): void {
   fs.appendFileSync(file, JSON.stringify(patch) + '\n');
 }
 
+/**
+ * Write a pre-folded `relate` line VERBATIM to graph.jsonl (Track 9, EC-5/B1).
+ *
+ * Unlike appendRelate (which force-writes valid_until:null — the fold owns liveness, so it can
+ * never express an expired edge), this carries the patch's valid_until and confirmed fields AS-IS.
+ * It exists for the dedup edge re-point: after a merge, each affected (from,rel,to) triple is folded
+ * (resolveEdge/resolveEdges) into ONE resolved patch carrying the true folded valid_until (the
+ * unrelate ts if a human rejected it) and confirmed (the latched value), then re-pointed onto the
+ * survivor. Direct-writing that one resolved relate preserves a human's unrelate/confirm_relate
+ * across the merge — an orphan unrelate on the survivor triple would be dropped by resolveEdges's
+ * no-base-relate rule, and appendRelate can't write an expired edge.
+ *
+ * The caller is responsible for folding + re-pointing FIRST (via resolveEdge + computeRepointedEdges
+ * in lib/maintainer). Lives here (not in maintainer) because graphPath()/ensureDir() are file-private
+ * and this belongs beside the other append writers (reuse invariant — the maintainer must not
+ * reimplement the append path). Does NOT touch entity_vec (edges aren't embedded).
+ */
+export function appendResolvedRelate(patch: RelatePatch): void {
+  const file = graphPath();
+  ensureDir(file);
+  // { ...patch, op:'relate' } — the patch already carries op:'relate'; spread-then-set is the same
+  // serialized line and avoids the TS2783 duplicate-key warning.
+  fs.appendFileSync(file, JSON.stringify({ ...patch, op: 'relate' }) + '\n');
+}
+
 // A parsed line is an entity record, a supersession patch, or a confirmation patch.
 function isSupersedePatch(rec: unknown): rec is SupersessionPatch {
   return (
@@ -234,8 +276,10 @@ function isUnrelatePatch(rec: unknown): rec is UnrelatePatch {
  *     edge line). Once true, NEVER cleared by a later automated `relate(confirmed:false)`.
  *   - liveness (`valid_until`) — HUMAN-AUTHORITATIVE. Track expiredAt (starts null): `unrelate`
  *     sets it to the patch ts (human reject); a human affirmation (`confirm_relate` or a
- *     `relate` with confirmed:true) clears it to null; an automated `relate(confirmed:false)`
- *     never touches it.
+ *     `relate` with confirmed:true) clears it to null; an automated `relate(confirmed:false,
+ *     valid_until:null)` never touches it. A PRE-EXPIRED `relate` (confirmed:false but
+ *     valid_until non-null — only appendResolvedRelate writes these, for the Track 9 edge
+ *     re-point) sets expiredAt to its own valid_until, so the fold reads expiry off the relate.
  *   - `confidence` / `source` / `valid_from` / `ts` — last-write from the highest-`ts` `relate`.
  * A triple seen only in a confirm_relate/unrelate with no establishing relate is dropped
  * (no base to attach to). Returns one resolved patch per triple, BOTH live (valid_until:null)
@@ -312,8 +356,15 @@ export function resolveEdges(
         if (r.confirmed === true) {
           confirmed = true; // human affirmation via manual / compacted-confirmed relate
           expiredAt = null; // human re-asserts liveness
+        } else if (r.valid_until !== null) {
+          // A PRE-EXPIRED relate line (Track 9 appendResolvedRelate — the dedup edge re-point folds a
+          // human unrelate into one resolved relate carrying the expiry verbatim). appendRelate always
+          // writes valid_until:null, so ONLY a resolved-relate line reaches this branch. Honour it: the
+          // fold reads liveness off the relate itself, so the survivor edge folds back EXPIRED without a
+          // companion unrelate (which would be dropped for lacking a base relate on the survivor triple).
+          expiredAt = r.valid_until;
         }
-        // an automated relate(confirmed:false) refreshes candidate fields only
+        // an automated relate(confirmed:false, valid_until:null) refreshes candidate fields only
       } else if (ev.kind === 'confirm_relate') {
         confirmed = true; // latch
         expiredAt = null; // human re-asserts liveness
@@ -355,6 +406,10 @@ export function attachRelations(entities: Map<string, EntityRecord>, edges: Rela
     if (edge.valid_until !== null) continue; // expired edges don't surface
     const from = entities.get(edge.from);
     if (!from) continue; // unknown from (EC6) — no-op
+    if (from.superseded_by !== null) continue; // merged-away/superseded from — its stale edges don't
+    // surface (Track 9: after a dedup merge, the merged-away node's original edges are re-pointed to
+    // the survivor via appendResolvedRelate; the source node's own line stops contributing so the
+    // edge isn't double-counted from both the dead node and the survivor).
     const rels = from.properties.relations ?? (from.properties.relations = []);
     rels.push({ rel: edge.rel, target_id: edge.to, confirmed: edge.confirmed });
   }

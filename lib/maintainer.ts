@@ -16,8 +16,18 @@
 // it with candidate `points_to` edges — reusing linkRelationDraft's ONE resolve-or-create impl.
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { linkRelationDraft, type LinkResult } from '../scripts/backfill-relations';
-import { loadGraph, type EntityRecord } from './graph';
+import {
+  appendEntityRecord,
+  appendResolvedRelate,
+  appendSupersede,
+  loadGraph,
+  resolveEdge,
+  type EntityRecord,
+  type RelatePatch,
+} from './graph';
 import type { BotRelationDraftItem } from './extraction';
 
 // ── The shared LLM helper ──────────────────────────────────────────────────────
@@ -242,6 +252,350 @@ export function resolutionWorker({
     });
     status.named_nodes_minted += result.entitiesCreated.length;
     status.edges_linked += result.edgesWritten;
+  }
+
+  return status;
+}
+
+// ── Worker 2: dedup / merge ────────────────────────────────────────────────────
+//
+// Merges duplicate entities. The LLM only IDENTIFIES same-real-thing groups keyed by id; every
+// write (survivor-select, property union, edge re-point, supersede) is deterministic TS. Two
+// structural guarantees: (1) NEVER supersede a lone entity on an LLM boolean — single-entity retype
+// is DEFERRED (B4), so a group needs ≥2 valid members; (2) NEVER drop a property value on a merge
+// (FR-10 hard). The one real correctness fix is edge re-point (EC-5/B1): for every triple touching a
+// merged-away id, fold it and DIRECT-WRITE one resolved relate on the survivor carrying the folded
+// valid_until/confirmed verbatim — a human unrelate/confirm_relate survives the merge — dropping any
+// re-point that collapses to a self-loop (B2).
+
+// The resolve-or-default graph path — the SAME value loadGraph() resolves internally (lib/graph.ts
+// graphPath()). Tests set MOT_GRAPH_PATH to a temp file; production leaves it unset and this returns
+// the live ontology/graph.jsonl. Used for the backup snapshot and passed to repointEdges.
+function resolveGraphFile(): string {
+  return process.env.MOT_GRAPH_PATH ?? path.join(process.cwd(), 'ontology', 'graph.jsonl');
+}
+
+// The properties present on an entity, excluding the folded relations[] (edges are re-derived at
+// read time — they are never a merge property). Mirrors cleanup-entities.ts:propCount.
+function propCount(e: EntityRecord): number {
+  const { relations: _r, ...rest } = e.properties ?? {};
+  return Object.keys(rest).length;
+}
+
+/**
+ * Select the canonical survivor of a duplicate group and additively union every merged-away
+ * entity's properties into it (FR-8/FR-10). Lifted from scripts/cleanup-entities.ts:71-98 so the
+ * script and the dedup worker share ONE merge core.
+ *
+ * Selection order (the cleanup-entities order): highest `confidence`, then most properties
+ * (excluding `relations`), then earliest `valid_from`.
+ *
+ * Property union is ADDITIVE and canonical-wins: `{ ...dupProps, ...survivor.properties }` — the
+ * survivor's value wins on a key conflict, but EVERY key from EVERY merged-away entity that the
+ * survivor lacks is imported. No key is ever dropped (FR-10 is a hard invariant, not best-effort).
+ * `relations` is excluded from the union (edges are re-folded from patches at read time).
+ */
+export function mergeGroup(members: EntityRecord[]): {
+  survivor: EntityRecord;
+  mergedAway: EntityRecord[];
+} {
+  // A stable copy so the caller's array order is not mutated.
+  const sorted = [...members].sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      propCount(b) - propCount(a) ||
+      a.valid_from.localeCompare(b.valid_from),
+  );
+  const survivor = sorted[0];
+  const mergedAway = sorted.slice(1);
+  for (const dup of mergedAway) {
+    const { relations: _r, ...dupProps } = dup.properties ?? {};
+    // canonical (survivor) wins on key conflict; every other key is imported (FR-10 hard).
+    survivor.properties = { ...dupProps, ...survivor.properties };
+  }
+  return { survivor, mergedAway };
+}
+
+/**
+ * The single shared PURE fold/re-point/self-loop-drop core (EC-5/B1/B2). Given a set of
+ * ALREADY-FOLDED live edges (each a resolved RelatePatch carrying its true valid_until/confirmed)
+ * and a `mergedAwayId → survivorId` map, return the re-pointed resolved edge set. No file I/O.
+ *
+ * BOTH consumers delegate here so the fold/re-point/self-loop logic is never duplicated:
+ *   - repointEdges (the worker's APPEND path) folds each triple then calls this, then
+ *     appendResolvedRelate's each result;
+ *   - scripts/cleanup-entities.ts (the atomic-REWRITE path) folds each triple then calls this to
+ *     build its rewrite array.
+ *
+ * Per input patch: re-point from' = map.get(from) ?? from, to' = map.get(to) ?? to. If from' === to'
+ * (a merged-away id had an edge to/from the survivor — re-pointing collapses it into a self-loop),
+ * DROP the triple: it is excluded from the result and logged. A self-loop carries no information
+ * (an entity related to itself), so dropping it is lossless (B2). Otherwise emit a new RelatePatch
+ * with the re-pointed endpoints and ALL other fields (rel, confidence, source, valid_from,
+ * valid_until, confirmed, ts) carried VERBATIM from the folded input.
+ */
+export function computeRepointedEdges(
+  edges: RelatePatch[],
+  mergedAwayMap: Map<string, string>,
+): RelatePatch[] {
+  const out: RelatePatch[] = [];
+  for (const e of edges) {
+    const from = mergedAwayMap.get(e.from) ?? e.from;
+    const to = mergedAwayMap.get(e.to) ?? e.to;
+    if (from === to) {
+      // B2 self-loop: re-point collapsed the triple onto a single node — drop it (lossless).
+      console.log(
+        `[MOT/maintainer] dropped self-loop after re-point: ${e.from} -[${e.rel}]-> ${e.to} → ${from} (no relate line written)`,
+      );
+      continue;
+    }
+    out.push({ ...e, from, to });
+  }
+  return out;
+}
+
+/**
+ * The APPEND path for the dedup worker's edge re-point (EC-5/B1/B2). For a single merge
+ * (mergedAwayId → survivorId), collect every distinct (from, rel, to) triple in `graphFile` where
+ * `from === mergedAwayId` OR `to === mergedAwayId`, fold each via resolveEdge (which folds all three
+ * patch kinds — relate + confirm_relate + unrelate), pass the folded patches through the shared
+ * computeRepointedEdges (re-point + self-loop drop), and appendResolvedRelate each survivor edge —
+ * one JSONL line per surviving triple, carrying the folded valid_until/confirmed verbatim.
+ *
+ * A triple with no base `relate` folds to null (resolveEdge returns null) and is skipped: an orphan
+ * confirm_relate/unrelate never established an edge, so there is nothing to re-point.
+ *
+ * `graphFile` MUST equal the value loadGraph() resolves (MOT_GRAPH_PATH or the ontology/ default);
+ * the worker passes resolveGraphFile(), tests pass their temp path.
+ */
+export function repointEdges(mergedAwayId: string, survivorId: string, graphFile: string): void {
+  if (!fs.existsSync(graphFile)) return;
+
+  // Collect every DISTINCT (from, rel, to) triple that touches the merged-away id, across all three
+  // patch kinds (a human unrelate/confirm_relate is keyed on the SAME natural key as its relate).
+  const triples = new Set<string>();
+  for (const line of fs.readFileSync(graphFile, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let r: { op?: string; from?: string; rel?: string; to?: string };
+    try {
+      r = JSON.parse(line) as typeof r;
+    } catch {
+      continue; // skip malformed
+    }
+    if (
+      (r.op === 'relate' || r.op === 'confirm_relate' || r.op === 'unrelate') &&
+      r.from &&
+      r.rel &&
+      r.to &&
+      (r.from === mergedAwayId || r.to === mergedAwayId)
+    ) {
+      triples.add(`${r.from}|${r.rel}|${r.to}`);
+    }
+  }
+
+  const mergedAwayMap = new Map<string, string>([[mergedAwayId, survivorId]]);
+  for (const key of triples) {
+    const [from, rel, to] = key.split('|') as [string, string, string];
+    const folded = resolveEdge(from, rel, to); // folds relate + confirm_relate + unrelate
+    if (!folded) continue; // no base relate → nothing to re-point
+    for (const edge of computeRepointedEdges([folded], mergedAwayMap)) {
+      appendResolvedRelate(edge);
+    }
+  }
+}
+
+// ── The dedup identification (LLM boundary) ──────────────────────────────────────
+
+// A merge group the LLM returns — keyed by entity id ONLY (no mutations, no is_retype field: B4).
+interface DedupGroup {
+  canonical_label: string;
+  canonical_type: EntityRecord['type'];
+  member_ids: string[];
+  confidence: number;
+  reason: string;
+}
+
+// The dedup worker's run summary (the `dedup` sub-object of MaintainerStatus — the status file +
+// MCP tools land in Phase 4; the shape is fixed here so callers can already consume it). No
+// entities_retyped field — single-entity retype is DEFERRED (B4).
+export interface DedupStatus {
+  last_run: string;
+  ok: boolean;
+  entities_merged: number;
+  backup_path: string | null;
+  batches_failed: number;
+  error: string | null;
+}
+
+// A-6 — the conservative dedup prompt, styled after RESOLUTION_PROMPT / EXTRACTION_PROMPT_GUIDANCE.
+// The LLM returns merge groups keyed by id; it never emits a mutation. There is NO is_retype field
+// and NO single-entity path (B4). The full same-type entity JSON is appended by the caller.
+export const DEDUP_PROMPT = `
+You are deduplicating an append-only entity memory graph. You are given a JSON array of ENTITIES that
+are ALL THE SAME TYPE (each: { id, type, label, properties, confidence }). Some describe the same
+real-world thing under slightly different labels or with different property sets.
+
+Your job: identify which entities are DUPLICATES — the same real-world thing — and group them. Return
+ONLY a JSON object of the exact shape:
+
+  { "groups": [
+    { "canonical_label": string,
+      "canonical_type": "Person" | "Project" | "Deadline" | "Preference" | "Fact",
+      "member_ids": string[],
+      "confidence": number,
+      "reason": string } ] }
+
+RULES:
+- Group ONLY entities that are the SAME real-world thing. When in doubt, do NOT group — a false merge
+  points two distinct memories at one node. Two different people who share a first name are NOT the
+  same entity; two projects with similar names are NOT the same unless the properties confirm it.
+- Every group MUST contain 2 OR MORE member_ids. A single-entity "group" is invalid and will be
+  discarded — never return a group with one member_id (there is no single-entity retype or supersede;
+  a wrong TYPE on a non-duplicate is corrected elsewhere, not here).
+- member_ids: the ids of the input entities that are the same thing. Use the ids verbatim. Include
+  the best canonical representative plus its duplicates.
+- canonical_label / canonical_type: the clean canonical name and type of the merged thing.
+- Base every judgment on the FULL property sets shown — explain in the reason field why they are the
+  same real-world thing (the concrete evidence, one sentence).
+- confidence (0.0–1.0): how certain you are these are the same thing. A group with confidence < 0.85
+  will be dropped — OMIT any group you are not at least 0.85 confident in.
+- Populate every field on every group. Do not emit prose or markdown fences — JSON only.
+`.trim();
+
+/**
+ * Worker 2 — dedup / merge.
+ *
+ * `identify` is the same dependency-injection seam as resolutionWorker: it defaults to the real
+ * `identifyViaClaude` in production; tests pass a stub returning canned merge groups so NO test ever
+ * spawns a real `claude -p`. All LLM access in the body goes through `identify`.
+ *
+ * Sequence: own .bak snapshot (skipped in dry-run) → deterministic exact-(type,label) pre-merge pass
+ * (no LLM, handles EC-6 concurrent-mint duplicates) → LLM dedup pass over the survivors (per-type
+ * batches, each in its own try/catch — EC-3). Each merge: mergeGroup → repointEdges (per merged-away
+ * id) → appendSupersede (skipping already-superseded — FR-19 idempotency). dryRun logs and writes
+ * nothing.
+ */
+export function dedupWorker({
+  dryRun,
+  identify = identifyViaClaude,
+}: {
+  dryRun: boolean;
+  identify?: (prompt: string) => unknown;
+}): DedupStatus {
+  const status: DedupStatus = {
+    last_run: new Date().toISOString(),
+    ok: true,
+    entities_merged: 0,
+    backup_path: null,
+    batches_failed: 0,
+    error: null,
+  };
+
+  // The SAME path loadGraph() resolves — used for the backup and passed to repointEdges.
+  const graphFile = resolveGraphFile();
+
+  // FR-9/EC-10 — the dedup worker takes its OWN timestamped .bak snapshot before any write,
+  // independent of the nightly graph backup. Skipped ENTIRELY in dry-run (AC-9: no backup file).
+  if (!dryRun && fs.existsSync(graphFile)) {
+    const backup = `${graphFile}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    fs.copyFileSync(graphFile, backup);
+    status.backup_path = backup;
+  }
+
+  // One merge of an already-selected member group: mergeGroup (survivor-select + additive property
+  // union — FR-10) → per merged-away id { supersede (skip if already superseded — FR-19) +
+  // repointEdges } → persist the survivor's unioned properties (append-only re-write, same id). In
+  // dry-run, log only and touch nothing.
+  const executeMerge = (members: EntityRecord[]): void => {
+    const { survivor, mergedAway } = mergeGroup(members);
+    let mergedAnyThisGroup = false;
+    for (const dup of mergedAway) {
+      // FR-19 idempotency — a re-run finds the loser already superseded and does not re-supersede.
+      if (dup.superseded_by !== null) continue;
+      if (dryRun) {
+        console.log(
+          `[MOT/maintainer] dedup (dry-run) would merge ${dup.type} "${dup.label}" (${dup.id}) → ${survivor.id}`,
+        );
+        continue;
+      }
+      appendSupersede(dup.id, survivor.id);
+      repointEdges(dup.id, survivor.id, graphFile);
+      status.entities_merged += 1;
+      mergedAnyThisGroup = true;
+    }
+    // Persist the survivor's unioned properties (FR-10 — no property value lost). Append-only: a
+    // fresh same-id record overrides on read (loadGraph last-write-wins by id). Only when a real
+    // merge happened this group (dry-run and fully-idempotent re-runs write nothing).
+    if (!dryRun && mergedAnyThisGroup) {
+      const { relations: _r, ...props } = survivor.properties ?? {};
+      appendEntityRecord({ ...survivor, properties: props });
+    }
+  };
+
+  // 1. Deterministic exact-(type,label) pre-merge pass (W2/EC-6). NO LLM call — a concurrent-mint
+  //    duplicate is exact by construction (same type, same trimmed-lowercased label). This handles
+  //    the EC-6 race for free AND shrinks the batch the LLM sees to only the non-exact candidates.
+  const actives = loadGraph().filter((e) => e.superseded_by === null);
+  const exactGroups = new Map<string, EntityRecord[]>();
+  for (const e of actives) {
+    // Identical key to scripts/cleanup-entities.ts:62.
+    const key = `${e.type.toLowerCase()} ${e.label.trim().toLowerCase()}`;
+    (exactGroups.get(key) ?? exactGroups.set(key, []).get(key)!).push(e);
+  }
+  for (const grp of exactGroups.values()) {
+    if (grp.length < 2) continue;
+    executeMerge(grp);
+  }
+
+  // 2. LLM dedup pass over the survivors. Reload actives AFTER the pre-merge (some ids are now
+  //    superseded). Group by normalized type and send each type-group to the LLM in its own
+  //    try/catch (EC-3: a failed batch logs, increments batches_failed, and the pass continues).
+  const survivors = loadGraph().filter((e) => e.superseded_by === null);
+  const byType = new Map<string, EntityRecord[]>();
+  for (const e of survivors) {
+    (byType.get(e.type) ?? byType.set(e.type, []).get(e.type)!).push(e);
+  }
+
+  for (const group of byType.values()) {
+    if (group.length < 2) continue; // a lone entity of a type can't have a same-type duplicate
+    let groups: DedupGroup[];
+    try {
+      const raw = identify(DEDUP_PROMPT + '\n\nENTITIES:\n' + JSON.stringify(group));
+      const parsed = (raw ?? {}) as { groups?: DedupGroup[] };
+      groups = Array.isArray(parsed.groups) ? parsed.groups : [];
+    } catch (err) {
+      console.error('[MOT/maintainer] dedup batch failed:', err);
+      status.batches_failed += 1;
+      status.ok = false;
+      status.error = String(err);
+      continue; // EC-3 — next type batch still runs
+    }
+
+    for (const g of groups) {
+      // Gate at confidence ≥ 0.85 (the LLM-identify/deterministic-execute boundary).
+      if (typeof g.confidence !== 'number' || g.confidence < 0.85) continue;
+
+      // EC-8 — re-validate member ids against a FRESH loadGraph() (the LLM ran against a snapshot;
+      // a concurrent write or an earlier merge this pass may have removed/superseded an id). Drop
+      // any id not present-and-active now.
+      const freshById = new Map(
+        loadGraph()
+          .filter((e) => e.superseded_by === null)
+          .map((e) => [e.id, e]),
+      );
+      const validMembers: EntityRecord[] = [];
+      for (const id of g.member_ids ?? []) {
+        const rec = freshById.get(id);
+        if (rec) validMembers.push(rec);
+      }
+
+      // B4 hard invariant — a single-member "group" is a no-op. Single-entity retype is DEFERRED;
+      // NEVER supersede a lone non-duplicate on an LLM boolean (that would violate FR-17 with no
+      // structural grounding). Only genuine ≥2-member merges proceed.
+      if (validMembers.length < 2) continue;
+
+      executeMerge(validMembers);
+    }
   }
 
   return status;
