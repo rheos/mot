@@ -403,7 +403,8 @@ export function resolveEdges(
  * stale value stored inline on an entity record is dropped, so it can never leak a phantom
  * edge that renders a Confirm button which can never stick). THEN pushes each LIVE edge
  * (valid_until === null) whose `from` is present in the map onto that entity's array.
- * Unknown `from` is a no-op (EC6); unknown `to` is kept as a dangling target.
+ * Unknown `from` is a no-op (EC6); an unknown `to` is kept as a dangling target, but a `to`
+ * that resolves to a SUPERSEDED/merged-away node is skipped (W2 defense-in-depth — see below).
  */
 export function attachRelations(entities: Map<string, EntityRecord>, edges: RelatePatch[]): void {
   for (const e of entities.values()) {
@@ -417,6 +418,12 @@ export function attachRelations(entities: Map<string, EntityRecord>, edges: Rela
     // surface (Track 9: after a dedup merge, the merged-away node's original edges are re-pointed to
     // the survivor via appendResolvedRelate; the source node's own line stops contributing so the
     // edge isn't double-counted from both the dead node and the survivor).
+    // W2 (Track 9 defense-in-depth): symmetric guard on the TARGET. If `to` resolves to a KNOWN but
+    // superseded/merged-away node, skip the edge — a stale-target edge that somehow survived the
+    // dedup re-point (e.g. a cross-group loser edge left dangling) must never surface as a phantom
+    // neighbour. An UNKNOWN `to` (not in the map) is still kept as a dangling target (unchanged).
+    const to = entities.get(edge.to);
+    if (to && to.superseded_by !== null) continue;
     const rels = from.properties.relations ?? (from.properties.relations = []);
     rels.push({ rel: edge.rel, target_id: edge.to, confirmed: edge.confirmed });
   }

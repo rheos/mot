@@ -9,7 +9,8 @@ import { execFileSync } from 'node:child_process';
 // and MOT_GRAPH_PATH pointed at a temp .jsonl file, BOTH before the first dynamic import (graphPath()
 // reads the env lazily on every call). dedupWorker takes an injectable `identify` — every test passes
 // a stub so NO test ever spawns a real `claude -p`. mergeGroup + computeRepointedEdges are pure and
-// unit-tested directly; repointEdges is tested against a temp graph file.
+// unit-tested directly; repointEdges (now taking the WHOLE pass-wide dup→survivor Map) is tested
+// against a temp graph file.
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-maint-dedup-'));
 const graphFile = path.join(tmpDir, 'graph.jsonl');
@@ -157,7 +158,7 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
     appendUnrelate(A.id, 'points_to', C.id);
 
     // Merge A → B: re-point every triple touching A onto B.
-    repointEdges(A.id, B.id, graphFile);
+    repointEdges(new Map([[A.id, B.id]]), graphFile);
 
     // A fresh loadGraph() must report B→C EXPIRED — B's live relations must NOT contain it.
     const active = loadGraph();
@@ -178,7 +179,7 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
     appendRelate(A.id, 'points_to', C.id, 0.9, 'session:s', false);
     appendConfirmRelate(A.id, 'points_to', C.id); // human affirmation
 
-    repointEdges(A.id, B.id, graphFile);
+    repointEdges(new Map([[A.id, B.id]]), graphFile);
 
     const active = loadGraph();
     const b = active.find((e) => e.id === B.id)!;
@@ -203,7 +204,7 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
     appendConfirmRelate(A.id, 'points_to', C.id); // human affirms …
     appendUnrelate(A.id, 'points_to', C.id); //     … then human REJECTS. Fold: confirmed+expired.
 
-    repointEdges(A.id, B.id, graphFile);
+    repointEdges(new Map([[A.id, B.id]]), graphFile);
 
     // A fresh loadGraph() must fold the survivor edge B→C EXPIRED — NOT live.
     const active = loadGraph();
@@ -226,7 +227,7 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
     appendRelate(A.id, 'points_to', C.id, 0.9, 'session:s', false);
     appendConfirmRelate(A.id, 'points_to', C.id); // human affirms, no later unrelate
 
-    repointEdges(A.id, B.id, graphFile);
+    repointEdges(new Map([[A.id, B.id]]), graphFile);
 
     const active = loadGraph();
     const b = active.find((e) => e.id === B.id)!;
@@ -248,7 +249,7 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
     // Mirror a real merge: A is superseded (so the stale A→B relate no longer surfaces — its from is
     // a superseded node the fold skips), then re-point A's edges onto B.
     appendSupersede(A.id, B.id);
-    repointEdges(A.id, B.id, graphFile);
+    repointEdges(new Map([[A.id, B.id]]), graphFile);
 
     // No survivor self-loop line must exist in the file.
     const selfLoop = readLines().some((l) => {
@@ -358,6 +359,109 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
     )!;
     expect(survivor.properties.a).toBe(1);
     expect(survivor.properties.b).toBe(2);
+  });
+
+  it('EC-12 — a live edge between TWO merge groups’ losers re-points to survivorA→survivorB (no phantom edge)', () => {
+    // THE BLOCKER. Two exact-label dup groups collapse in the SAME pass, and a live edge exists
+    // between their LOSERS. The old per-group single-entry repointEdges re-pointed only the a-loser,
+    // leaving survivorA -> (dead) b1 pointing at a superseded node forever (a phantom neighbour in
+    // relatedEntities). The whole-pass map folds BOTH endpoints: a1->b1 becomes survivorA->survivorB.
+    resetGraph();
+    // Group A: survivor a2 (conf 0.95) + loser a1 (conf 0.8). Same exact label -> pre-pass merges.
+    const a1 = seedEntity('Person', 'GroupA', { confidence: 0.8 });
+    const a2 = seedEntity('Person', 'GroupA', { confidence: 0.95 });
+    // Group B: survivor b2 (conf 0.95) + loser b1 (conf 0.8).
+    const b1 = seedEntity('Person', 'GroupB', { confidence: 0.8 });
+    const b2 = seedEntity('Person', 'GroupB', { confidence: 0.95 });
+    // The live edge between the two groups' LOSERS.
+    appendRelate(a1.id, 'points_to', b1.id, 0.9, 'session:s', false);
+
+    const identify = vi.fn().mockReturnValue({ groups: [] }); // exact pre-pass does both merges
+
+    dedupWorker({ dryRun: false, identify });
+
+    // Both survivors are a2 and b2 (highest confidence in each group); a1 and b1 are superseded.
+    const folded = loadGraph();
+    const foldedById = new Map(folded.map((e) => [e.id, e]));
+    const active = folded.filter((e) => e.superseded_by === null);
+    const byId = new Map(active.map((e) => [e.id, e]));
+    const survA = a2.id;
+    const survB = b2.id;
+    // a1 and b1 are superseded away (still present in the fold, but no longer active).
+    expect(foldedById.get(a1.id)?.superseded_by).not.toBeNull();
+    expect(foldedById.get(b1.id)?.superseded_by).not.toBeNull();
+    expect(byId.has(a1.id)).toBe(false); // not in the active set
+    expect(byId.has(b1.id)).toBe(false);
+
+    // NO LIVE edge in the folded graph may point AT a superseded node. Walk every ACTIVE entity's
+    // live relations[] and assert every target resolves to an ACTIVE node (never a superseded id).
+    for (const e of active) {
+      for (const rel of e.properties.relations ?? []) {
+        expect(
+          byId.get(rel.target_id),
+          `live edge ${e.id} -> ${rel.target_id} points at a non-active node`,
+        ).toBeDefined();
+      }
+    }
+
+    // The surviving edge is survivorA -> survivorB (both endpoints resolved), and it surfaces as a
+    // neighbour of survivorA — with survivorB, NOT the dead b1.
+    const survAedges = byId.get(survA)?.properties.relations ?? [];
+    const edgeToSurvB = survAedges.find((r) => r.rel === 'points_to' && r.target_id === survB);
+    expect(edgeToSurvB, 'survivorA must have a live points_to edge to survivorB').toBeDefined();
+    // No live edge on survivorA points at the dead b1.
+    expect(survAedges.some((r) => r.target_id === b1.id)).toBe(false);
+
+    // relatedEntities(survivorA) shows survivorB and NOT the phantom dead b1.
+    const relatedA = relatedEntities(survA).map((n) => n.id);
+    expect(relatedA).toContain(survB);
+    expect(relatedA).not.toContain(b1.id);
+
+    // Stable across a SECOND pass: nothing new is written (FR-19 idempotent), and the graph still
+    // has no live edge pointing at a superseded node.
+    const linesAfterFirst = graphLineCount();
+    dedupWorker({ dryRun: false, identify });
+    expect(graphLineCount()).toBe(linesAfterFirst); // idempotent — no second-pass writes
+    const active2 = loadGraph().filter((e) => e.superseded_by === null);
+    const byId2 = new Map(active2.map((e) => [e.id, e]));
+    for (const e of active2) {
+      for (const rel of e.properties.relations ?? []) {
+        expect(byId2.get(rel.target_id), `pass-2 phantom edge ${e.id} -> ${rel.target_id}`).toBeDefined();
+      }
+    }
+    expect(relatedEntities(survA).map((n) => n.id)).not.toContain(b1.id);
+  });
+
+  it('W1 / FR-10 — a nested object value under a shared key is NOT lost on merge (deep union)', () => {
+    // Canonical and loser BOTH carry a top-level object key `meta` with DISJOINT nested subkeys. A
+    // shallow spread would keep only canonical's whole `meta` and silently drop the loser's nested
+    // subkey. FR-10 (no value lost) requires a deep merge so BOTH nested subkeys survive; canonical
+    // still wins on a true leaf collision.
+    const canonical: EntityRecord = {
+      id: 'canon', type: 'Person', label: 'Taylor',
+      properties: { meta: { a: 1, shared: 'canon-wins' }, top: 'c' },
+      confidence: 0.95, confirmed: false, source: 'session:1',
+      valid_from: '2026-06-01T00:00:00.000Z', valid_until: null, superseded_by: null,
+    };
+    const loser: EntityRecord = {
+      id: 'loser', type: 'Person', label: 'Taylor',
+      properties: { meta: { b: 2, shared: 'loser-loses' }, other: 'l' },
+      confidence: 0.8, confirmed: false, source: 'session:2',
+      valid_from: '2026-06-02T00:00:00.000Z', valid_until: null, superseded_by: null,
+    };
+
+    const { survivor } = mergeGroup([loser, canonical]);
+
+    expect(survivor.id).toBe('canon'); // highest confidence survives
+    const meta = survivor.properties.meta as Record<string, unknown>;
+    // BOTH nested subkeys present — the loser's `meta.b` was NOT dropped (W1/FR-10).
+    expect(meta.a).toBe(1);
+    expect(meta.b).toBe(2);
+    // Canonical still wins on the genuinely-conflicting nested leaf.
+    expect(meta.shared).toBe('canon-wins');
+    // Top-level disjoint keys both survive too.
+    expect(survivor.properties.top).toBe('c');
+    expect(survivor.properties.other).toBe('l');
   });
 });
 

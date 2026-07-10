@@ -282,6 +282,35 @@ function propCount(e: EntityRecord): number {
   return Object.keys(rest).length;
 }
 
+// True for a plain object (not null, not an array) — the only shape we recurse into when deep-merging
+// a conflicting key. Scalars, arrays, and null keep canonical-wins (no merge).
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * W1 / FR-10 — deep-merge a loser's props UNDER a canonical's props, canonical-wins on every LEAF
+ * conflict, but recursing into a key that is a plain object on BOTH sides so no nested value is lost.
+ *
+ * The shallow `{ ...loser, ...canonical }` spread drops the loser's nested content whenever a
+ * top-level object key exists on both sides (canonical's whole object wins, loser's disjoint subkeys
+ * vanish). FR-10 ("no value lost") forbids that: for an object-valued key present on both, recurse so
+ * both objects' subkeys survive (canonical still wins where they truly collide). Scalars/arrays/null
+ * keep canonical-wins (an array is not deep-merged — element identity is ambiguous).
+ */
+function deepMergePreferCanonical(
+  loser: Record<string, unknown>,
+  canonical: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...loser };
+  for (const [k, cv] of Object.entries(canonical)) {
+    const lv = out[k];
+    out[k] =
+      isPlainObject(lv) && isPlainObject(cv) ? deepMergePreferCanonical(lv, cv) : cv;
+  }
+  return out;
+}
+
 /**
  * Select the canonical survivor of a duplicate group and additively union every merged-away
  * entity's properties into it (FR-8/FR-10). Lifted from scripts/cleanup-entities.ts:71-98 so the
@@ -290,10 +319,13 @@ function propCount(e: EntityRecord): number {
  * Selection order (the cleanup-entities order): highest `confidence`, then most properties
  * (excluding `relations`), then earliest `valid_from`.
  *
- * Property union is ADDITIVE and canonical-wins: `{ ...dupProps, ...survivor.properties }` — the
- * survivor's value wins on a key conflict, but EVERY key from EVERY merged-away entity that the
- * survivor lacks is imported. No key is ever dropped (FR-10 is a hard invariant, not best-effort).
- * `relations` is excluded from the union (edges are re-folded from patches at read time).
+ * Property union is ADDITIVE and canonical-wins via deepMergePreferCanonical — the survivor's value
+ * wins on a LEAF key conflict, but EVERY key from EVERY merged-away entity that the survivor lacks is
+ * imported, AND a key that is a plain object on BOTH sides is DEEP-merged so the loser's disjoint
+ * nested subkeys are not silently dropped (W1/FR-10 — no value lost, nested content included). A
+ * plain `{ ...dupProps, ...survivor }` spread would drop the loser's nested content under any shared
+ * object key; FR-10 is a hard invariant, not best-effort. `relations` is excluded from the union
+ * (edges are re-folded from patches at read time).
  */
 export function mergeGroup(members: EntityRecord[]): {
   survivor: EntityRecord;
@@ -310,8 +342,12 @@ export function mergeGroup(members: EntityRecord[]): {
   const mergedAway = sorted.slice(1);
   for (const dup of mergedAway) {
     const { relations: _r, ...dupProps } = dup.properties ?? {};
-    // canonical (survivor) wins on key conflict; every other key is imported (FR-10 hard).
-    survivor.properties = { ...dupProps, ...survivor.properties };
+    const { relations: survRels, ...survProps } = survivor.properties ?? {};
+    // canonical (survivor) wins on leaf conflict; every other key is imported and object-valued
+    // conflicts deep-merge so no nested value is lost (FR-10 hard). Re-attach the folded relations
+    // untouched (edges are never a merge property).
+    survivor.properties = { ...deepMergePreferCanonical(dupProps, survProps), relations: survRels };
+    if (survRels === undefined) delete survivor.properties.relations;
   }
   return { survivor, mergedAway };
 }
@@ -355,12 +391,21 @@ export function computeRepointedEdges(
 }
 
 /**
- * The APPEND path for the dedup worker's edge re-point (EC-5/B1/B2). For a single merge
- * (mergedAwayId → survivorId), collect every distinct (from, rel, to) triple in `graphFile` where
- * `from === mergedAwayId` OR `to === mergedAwayId`, fold each via resolveEdge (which folds all three
- * patch kinds — relate + confirm_relate + unrelate), pass the folded patches through the shared
- * computeRepointedEdges (re-point + self-loop drop), and appendResolvedRelate each survivor edge —
- * one JSONL line per surviving triple, carrying the folded valid_until/confirmed verbatim.
+ * The APPEND path for the dedup worker's edge re-point (EC-5/B1/B2). Takes the COMPLETE pass-wide
+ * `mergedAwayId → survivorId` map (every duplicate collapsed anywhere in the pass, across ALL groups)
+ * and re-points once over every affected triple. Collect every distinct (from, rel, to) triple in
+ * `graphFile` where `from` OR `to` is ANY merged-away id in the map, fold each via resolveEdge (which
+ * folds all three patch kinds — relate + confirm_relate + unrelate), pass the folded patches through
+ * the shared computeRepointedEdges (which re-points BOTH endpoints against the same complete map +
+ * drops self-loops), and appendResolvedRelate each survivor edge — one JSONL line per surviving
+ * triple, carrying the folded valid_until/confirmed verbatim.
+ *
+ * Passing the WHOLE map (not one entry per merge) is the EC-12 correctness fix: an edge whose two
+ * endpoints are losers of TWO DIFFERENT groups (a1→b1, where a1→A and b1→B this pass) folds to
+ * A→B — both ends resolved in one shot. A per-group single-entry map re-pointed only a1, leaving
+ * A→b1 pointing at the now-dead b1 (a phantom neighbour that survives across passes). Re-pointing
+ * both endpoints against the complete map makes the append path converge with the cleanup-entities
+ * atomic-rewrite path, which already uses one whole-pass map.
  *
  * A triple with no base `relate` folds to null (resolveEdge returns null) and is skipped: an orphan
  * confirm_relate/unrelate never established an edge, so there is nothing to re-point.
@@ -368,11 +413,14 @@ export function computeRepointedEdges(
  * `graphFile` MUST equal the value loadGraph() resolves (MOT_GRAPH_PATH or the ontology/ default);
  * the worker passes resolveGraphFile(), tests pass their temp path.
  */
-export function repointEdges(mergedAwayId: string, survivorId: string, graphFile: string): void {
+export function repointEdges(mergedAwayMap: Map<string, string>, graphFile: string): void {
+  if (mergedAwayMap.size === 0) return;
   if (!fs.existsSync(graphFile)) return;
 
-  // Collect every DISTINCT (from, rel, to) triple that touches the merged-away id, across all three
-  // patch kinds (a human unrelate/confirm_relate is keyed on the SAME natural key as its relate).
+  // Collect every DISTINCT (from, rel, to) triple that touches ANY merged-away id in the map, across
+  // all three patch kinds (a human unrelate/confirm_relate is keyed on the SAME natural key as its
+  // relate). A triple between two DIFFERENT groups' losers is collected here (either endpoint hits)
+  // and re-pointed at BOTH ends by computeRepointedEdges.
   const triples = new Set<string>();
   for (const line of fs.readFileSync(graphFile, 'utf8').split('\n')) {
     if (!line.trim()) continue;
@@ -387,13 +435,12 @@ export function repointEdges(mergedAwayId: string, survivorId: string, graphFile
       r.from &&
       r.rel &&
       r.to &&
-      (r.from === mergedAwayId || r.to === mergedAwayId)
+      (mergedAwayMap.has(r.from) || mergedAwayMap.has(r.to))
     ) {
       triples.add(`${r.from}|${r.rel}|${r.to}`);
     }
   }
 
-  const mergedAwayMap = new Map<string, string>([[mergedAwayId, survivorId]]);
   for (const key of triples) {
     const [from, rel, to] = key.split('|') as [string, string, string];
     const folded = resolveEdge(from, rel, to); // folds relate + confirm_relate + unrelate
@@ -471,9 +518,11 @@ RULES:
  *
  * Sequence: own .bak snapshot (skipped in dry-run) → deterministic exact-(type,label) pre-merge pass
  * (no LLM, handles EC-6 concurrent-mint duplicates) → LLM dedup pass over the survivors (per-type
- * batches, each in its own try/catch — EC-3). Each merge: mergeGroup → repointEdges (per merged-away
- * id) → appendSupersede (skipping already-superseded — FR-19 idempotency). dryRun logs and writes
- * nothing.
+ * batches, each in its own try/catch — EC-3). Each group is DECIDED (mergeGroup → appendSupersede,
+ * skipping already-superseded — FR-19 idempotency → persist the survivor's unioned properties),
+ * accumulating every dup→survivor into ONE pass-wide `mergedAwayMap`. The edge re-point fires ONCE at
+ * the end over that COMPLETE map (EC-12) — NOT once per group with a single-entry map, which left an
+ * edge between two groups' losers pointing at a dead node. dryRun logs and writes nothing.
  */
 export function dedupWorker({
   dryRun,
@@ -502,9 +551,16 @@ export function dedupWorker({
     status.backup_path = backup;
   }
 
-  // One merge of an already-selected member group: mergeGroup (survivor-select + additive property
-  // union — FR-10) → per merged-away id { supersede (skip if already superseded — FR-19) +
-  // repointEdges } → persist the survivor's unioned properties (append-only re-write, same id). In
+  // The ONE pass-wide merged-away map (every dup→survivor decided anywhere in this pass, across the
+  // pre-pass AND every LLM type-batch). The edge re-point reads THIS complete map once at the end so
+  // an edge whose two endpoints are losers of two DIFFERENT groups folds to survivorA→survivorB (both
+  // ends resolved). Populated per group by executeMerge; consumed once after both passes (EC-12).
+  const mergedAwayMap = new Map<string, string>();
+
+  // Decide + persist one already-selected member group: mergeGroup (survivor-select + additive
+  // property union — FR-10) → per merged-away id { supersede (skip if already superseded — FR-19),
+  // record dup→survivor in the pass-wide map } → persist the survivor's unioned properties
+  // (append-only re-write, same id). Edge re-point is DEFERRED to a single whole-pass call. In
   // dry-run, log only and touch nothing.
   const executeMerge = (members: EntityRecord[]): void => {
     const { survivor, mergedAway } = mergeGroup(members);
@@ -519,7 +575,7 @@ export function dedupWorker({
         continue;
       }
       appendSupersede(dup.id, survivor.id);
-      repointEdges(dup.id, survivor.id, graphFile);
+      mergedAwayMap.set(dup.id, survivor.id); // EC-12 — accumulate; re-point once at the end
       status.entities_merged += 1;
       mergedAnyThisGroup = true;
     }
@@ -598,5 +654,34 @@ export function dedupWorker({
     }
   }
 
+  // 3. EC-12 — ONE edge re-point over the COMPLETE pass-wide map, AFTER every group is decided and
+  //    superseded. This is the correctness fix: a live edge between the losers of two different
+  //    groups (a1→b1, where a1→A and b1→B this pass) is re-pointed at BOTH ends to A→B in one shot,
+  //    instead of leaving A→b1 pointing at the now-dead b1 (a phantom neighbour). Flatten the map to
+  //    FINAL survivors first so a chained merge (a1→A, then A→X folds A as a loser) resolves a1→X too.
+  if (!dryRun && mergedAwayMap.size > 0) {
+    repointEdges(flattenToFinalSurvivors(mergedAwayMap), graphFile);
+  }
+
   return status;
+}
+
+/**
+ * Flatten a dup→survivor map to dup→FINAL-survivor by following each chain to a fixed point (EC-12).
+ * A single pass can produce a chain — e.g. the pre-pass merges a2→A, then the LLM groups {A, X} and
+ * selects X, adding A→X. An edge off a2 must land on X, not the now-superseded A. Cycle-guarded
+ * (a corrupt self-referential chain terminates instead of looping).
+ */
+function flattenToFinalSurvivors(map: Map<string, string>): Map<string, string> {
+  const flat = new Map<string, string>();
+  for (const [dup, surv] of map) {
+    let final = surv;
+    const seen = new Set<string>([dup]);
+    while (map.has(final) && !seen.has(final)) {
+      seen.add(final);
+      final = map.get(final)!;
+    }
+    flat.set(dup, final);
+  }
+  return flat;
 }
