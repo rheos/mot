@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { getDb } from '../db/client';
 import { compactGraph } from './graph-compact';
+import { resolutionWorker, dedupWorker } from './maintainer';
 // NOTE: prunePendingProcedural / prunePendingEntities are intentionally NOT imported here anymore.
 // The nightly job no longer disuse-prunes memories — persistence is a hard product requirement
 // (a fact Taylor stated once must survive indefinitely, even if never referenced again). The prune
@@ -104,6 +105,36 @@ export function scheduleNightly(): void {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT/nightly] graph compact failed:', e);
+    }
+
+    // ── Track 9 Maintainer — entity resolution + dedup workers ───────────────────
+    // Both run LIVE (dryRun:false). Each in its OWN try/catch so one worker's failure never
+    // blocks the other or the rest of the nightly job (FR-12/AC-10). The env short-circuits
+    // (MAINTAINER_*_DISABLE='1') let Taylor turn a worker off without a deploy (FR-14/AC-7):
+    // one log line, NO worker call, NO write. Sequence so far:
+    //   vacuumInto → backupGraph → [compact if ≥5MB] → resolution → dedup.
+    try {
+      if (process.env.MAINTAINER_RESOLUTION_DISABLE === '1') {
+        // eslint-disable-next-line no-console
+        console.log('[MOT/maintainer] resolution worker disabled — skipping');
+      } else {
+        await resolutionWorker({ dryRun: false });
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT/nightly] resolution worker failed:', e);
+    }
+
+    try {
+      if (process.env.MAINTAINER_DEDUP_DISABLE === '1') {
+        // eslint-disable-next-line no-console
+        console.log('[MOT/maintainer] dedup worker disabled — skipping');
+      } else {
+        await dedupWorker({ dryRun: false });
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT/nightly] dedup worker failed:', e);
     }
   });
   // eslint-disable-next-line no-console

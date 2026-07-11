@@ -125,6 +125,23 @@ export function appendEntity(rec: Omit<EntityRecord, 'id'>): EntityRecord {
 }
 
 /**
+ * Append a FULL entity record VERBATIM, keeping its existing `id` (Track 9 dedup property union).
+ *
+ * Unlike appendEntity (which mints a fresh id), this re-writes an existing entity in place: loadGraph
+ * folds records by id last-write-wins (`entities.set(rec.id, rec)`), so a later same-id line overrides
+ * the earlier one on read. Used by the dedup worker to persist the survivor's unioned properties after
+ * a merge — the append-only equivalent of the cleanup-entities atomic rewrite's in-place mutation.
+ * The caller strips properties.relations first (edges are re-folded from patches at read time).
+ * Fires the same fire-and-forget vec re-index as appendEntity (the label/properties text changed).
+ */
+export function appendEntityRecord(rec: EntityRecord): void {
+  const file = graphPath();
+  ensureDir(file);
+  fs.appendFileSync(file, JSON.stringify(rec) + '\n');
+  indexAsync(getDb(), 'entity_vec', rec.id, rec.label + ' ' + JSON.stringify(rec.properties));
+}
+
+/**
  * Append a supersession patch marking `oldId` as superseded by `newId`. Same
  * single-syscall append pattern as appendEntity.
  */
@@ -196,6 +213,31 @@ export function appendUnrelate(from: string, rel: string, to: string): void {
   fs.appendFileSync(file, JSON.stringify(patch) + '\n');
 }
 
+/**
+ * Write a pre-folded `relate` line VERBATIM to graph.jsonl (Track 9, EC-5/B1).
+ *
+ * Unlike appendRelate (which force-writes valid_until:null — the fold owns liveness, so it can
+ * never express an expired edge), this carries the patch's valid_until and confirmed fields AS-IS.
+ * It exists for the dedup edge re-point: after a merge, each affected (from,rel,to) triple is folded
+ * (resolveEdge/resolveEdges) into ONE resolved patch carrying the true folded valid_until (the
+ * unrelate ts if a human rejected it) and confirmed (the latched value), then re-pointed onto the
+ * survivor. Direct-writing that one resolved relate preserves a human's unrelate/confirm_relate
+ * across the merge — an orphan unrelate on the survivor triple would be dropped by resolveEdges's
+ * no-base-relate rule, and appendRelate can't write an expired edge.
+ *
+ * The caller is responsible for folding + re-pointing FIRST (via resolveEdge + computeRepointedEdges
+ * in lib/maintainer). Lives here (not in maintainer) because graphPath()/ensureDir() are file-private
+ * and this belongs beside the other append writers (reuse invariant — the maintainer must not
+ * reimplement the append path). Does NOT touch entity_vec (edges aren't embedded).
+ */
+export function appendResolvedRelate(patch: RelatePatch): void {
+  const file = graphPath();
+  ensureDir(file);
+  // { ...patch, op:'relate' } — the patch already carries op:'relate'; spread-then-set is the same
+  // serialized line and avoids the TS2783 duplicate-key warning.
+  fs.appendFileSync(file, JSON.stringify({ ...patch, op: 'relate' }) + '\n');
+}
+
 // A parsed line is an entity record, a supersession patch, or a confirmation patch.
 function isSupersedePatch(rec: unknown): rec is SupersessionPatch {
   return (
@@ -233,9 +275,13 @@ function isUnrelatePatch(rec: unknown): rec is UnrelatePatch {
  *     `relate` whose own `confirmed === true` (a manual entity_relate or a compacted-confirmed
  *     edge line). Once true, NEVER cleared by a later automated `relate(confirmed:false)`.
  *   - liveness (`valid_until`) — HUMAN-AUTHORITATIVE. Track expiredAt (starts null): `unrelate`
- *     sets it to the patch ts (human reject); a human affirmation (`confirm_relate` or a
- *     `relate` with confirmed:true) clears it to null; an automated `relate(confirmed:false)`
- *     never touches it.
+ *     sets it to the patch ts (human reject); a `confirm_relate`, or a LIVE `relate` with
+ *     confirmed:true AND valid_until:null, clears it to null; an automated
+ *     `relate(confirmed:false, valid_until:null)` never touches it. A PRE-EXPIRED `relate`
+ *     (valid_until non-null — only appendResolvedRelate writes these, for the Track 9 edge
+ *     re-point) sets expiredAt to its own valid_until, and its valid_until WINS regardless of
+ *     `confirmed` — a confirmed-then-rejected edge (relate → confirm_relate → unrelate) folds to
+ *     confirmed:true + expired, and the re-point must preserve the rejection, not resurrect it live.
  *   - `confidence` / `source` / `valid_from` / `ts` — last-write from the highest-`ts` `relate`.
  * A triple seen only in a confirm_relate/unrelate with no establishing relate is dropped
  * (no base to attach to). Returns one resolved patch per triple, BOTH live (valid_until:null)
@@ -309,11 +355,23 @@ export function resolveEdges(
         source = r.source;
         validFrom = r.valid_from;
         latestTs = r.ts;
-        if (r.confirmed === true) {
+        if (r.valid_until !== null) {
+          // A PRE-EXPIRED relate line (Track 9 appendResolvedRelate — the dedup edge re-point folds a
+          // human unrelate into one resolved relate carrying the expiry verbatim). appendRelate always
+          // writes valid_until:null, so ONLY a resolved-relate line reaches this branch. Honour it: the
+          // fold reads liveness off the relate itself, so the survivor edge folds back EXPIRED without a
+          // companion unrelate (which would be dropped for lacking a base relate on the survivor triple).
+          // A resolved relate can be BOTH confirmed:true AND expired (a confirmed-then-rejected edge:
+          // relate → confirm_relate → unrelate folds to confirmed:true, valid_until=unrelate.ts). Its own
+          // valid_until MUST win regardless of confirmed, else the re-point resurrects a rejected edge
+          // LIVE and the human's rejection is lost (EC-5 confirmed+rejected case).
+          expiredAt = r.valid_until;
+          if (r.confirmed === true) confirmed = true; // still latch confirmed
+        } else if (r.confirmed === true) {
           confirmed = true; // human affirmation via manual / compacted-confirmed relate
-          expiredAt = null; // human re-asserts liveness
+          expiredAt = null; // a live confirmed relate re-asserts liveness
         }
-        // an automated relate(confirmed:false) refreshes candidate fields only
+        // an automated relate(confirmed:false, valid_until:null) refreshes candidate fields only
       } else if (ev.kind === 'confirm_relate') {
         confirmed = true; // latch
         expiredAt = null; // human re-asserts liveness
@@ -345,7 +403,8 @@ export function resolveEdges(
  * stale value stored inline on an entity record is dropped, so it can never leak a phantom
  * edge that renders a Confirm button which can never stick). THEN pushes each LIVE edge
  * (valid_until === null) whose `from` is present in the map onto that entity's array.
- * Unknown `from` is a no-op (EC6); unknown `to` is kept as a dangling target.
+ * Unknown `from` is a no-op (EC6); an unknown `to` is kept as a dangling target, but a `to`
+ * that resolves to a SUPERSEDED/merged-away node is skipped (W2 defense-in-depth — see below).
  */
 export function attachRelations(entities: Map<string, EntityRecord>, edges: RelatePatch[]): void {
   for (const e of entities.values()) {
@@ -355,6 +414,16 @@ export function attachRelations(entities: Map<string, EntityRecord>, edges: Rela
     if (edge.valid_until !== null) continue; // expired edges don't surface
     const from = entities.get(edge.from);
     if (!from) continue; // unknown from (EC6) — no-op
+    if (from.superseded_by !== null) continue; // merged-away/superseded from — its stale edges don't
+    // surface (Track 9: after a dedup merge, the merged-away node's original edges are re-pointed to
+    // the survivor via appendResolvedRelate; the source node's own line stops contributing so the
+    // edge isn't double-counted from both the dead node and the survivor).
+    // W2 (Track 9 defense-in-depth): symmetric guard on the TARGET. If `to` resolves to a KNOWN but
+    // superseded/merged-away node, skip the edge — a stale-target edge that somehow survived the
+    // dedup re-point (e.g. a cross-group loser edge left dangling) must never surface as a phantom
+    // neighbour. An UNKNOWN `to` (not in the map) is still kept as a dangling target (unchanged).
+    const to = entities.get(edge.to);
+    if (to && to.superseded_by !== null) continue;
     const rels = from.properties.relations ?? (from.properties.relations = []);
     rels.push({ rel: edge.rel, target_id: edge.to, confirmed: edge.confirmed });
   }
@@ -687,11 +756,16 @@ export function searchEntities(
 }
 
 /**
- * BFS traversal from `id` following properties.relations[].target_id edges (FR 9).
+ * BFS traversal from `id` following properties.relations[] edges in BOTH directions (FR 9).
+ * "Related" means connected EITHER way: the traversal follows a node's OUTBOUND edges (its own
+ * relations[].target_id) AND its INBOUND edges (every other active entity whose relations[]
+ * point at this node). This surfaces a canonical node's inbound members too — e.g. the Track 9
+ * resolution worker links member Facts to a canonical node with a Fact→canonical `points_to`
+ * edge, so those Facts are inbound to the canonical node and must count as related.
  *   - hops clamped to max 3 (EC-3); cycle-safe via a visited Set (EC-3).
- *   - rel: when given, only follow edges whose `rel` matches.
+ *   - rel: when given, only follow edges whose `rel` matches — in EITHER direction.
  *   - unconfirmed edges ARE followed (ambient model); confirmed-reached neighbours sort first,
- *     then by entity confidence DESC.
+ *     then by entity confidence DESC (applied to inbound-reached neighbours too).
  *   - total result set capped at 50 entities (AC-6).
  * Returns the collected entities (the starting entity is NOT included), or [] if `id`
  * is not in the graph.
@@ -700,6 +774,21 @@ export function relatedEntities(id: string, rel?: string, hops = 1): EntityRecor
   const all = loadGraph();
   const byId = new Map(all.map((e) => [e.id, e]));
   if (!byId.has(id)) return [];
+
+  // Reverse index, built ONCE per call: target_id → the edges pointing AT it. Lets the inbound
+  // arm of each frontier node be an O(1) lookup instead of rescanning the whole graph per node.
+  const inboundBySource = new Map<
+    string,
+    { sourceId: string; rel: string; confirmed: boolean }[]
+  >();
+  for (const e of all) {
+    for (const edge of e.properties.relations ?? []) {
+      const bucket = inboundBySource.get(edge.target_id);
+      const entry = { sourceId: e.id, rel: edge.rel, confirmed: edge.confirmed };
+      if (bucket) bucket.push(entry);
+      else inboundBySource.set(edge.target_id, [entry]);
+    }
+  }
 
   const maxHops = Math.min(hops, 3);
   const visited = new Set<string>([id]);
@@ -714,18 +803,28 @@ export function relatedEntities(id: string, rel?: string, hops = 1): EntityRecor
     // track whether each neighbour was reached by a confirmed edge so the hop can sort them first.
     const nextById = new Map<string, { node: EntityRecord; confirmed: boolean }>();
 
+    // One neighbour-consider step, shared by the outbound and inbound arms: same rel filter,
+    // visited skip, missing-node skip, and confirmed-upgrade logic in both directions.
+    const consider = (neighbourId: string, edgeRel: string, edgeConfirmed: boolean): void => {
+      if (rel !== undefined && edgeRel !== rel) return;
+      if (visited.has(neighbourId)) return;
+      const target = byId.get(neighbourId);
+      if (!target) return; // edge to a missing/compacted node
+      const prev = nextById.get(target.id);
+      // Keep the strongest reaching-edge: a confirmed edge upgrades a prior unconfirmed reach.
+      if (!prev || (edgeConfirmed === true && !prev.confirmed)) {
+        nextById.set(target.id, { node: target, confirmed: edgeConfirmed === true });
+      }
+    };
+
     for (const node of frontier) {
-      const edges = node.properties.relations ?? [];
-      for (const edge of edges) {
-        if (rel !== undefined && edge.rel !== rel) continue;
-        if (visited.has(edge.target_id)) continue;
-        const target = byId.get(edge.target_id);
-        if (!target) continue; // edge to a missing/compacted node
-        const prev = nextById.get(target.id);
-        // Keep the strongest reaching-edge: a confirmed edge upgrades a prior unconfirmed reach.
-        if (!prev || (edge.confirmed === true && !prev.confirmed)) {
-          nextById.set(target.id, { node: target, confirmed: edge.confirmed === true });
-        }
+      // OUTBOUND: the node's own relations[] (as before).
+      for (const edge of node.properties.relations ?? []) {
+        consider(edge.target_id, edge.rel, edge.confirmed === true);
+      }
+      // INBOUND: every other active entity whose relations[] point AT this node.
+      for (const inEdge of inboundBySource.get(node.id) ?? []) {
+        consider(inEdge.sourceId, inEdge.rel, inEdge.confirmed === true);
       }
     }
 

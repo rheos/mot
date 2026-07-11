@@ -10,7 +10,8 @@
 // Architecture §OQ-2: this is the digest trigger point — the extraction fires from the digest
 // route handler, in TypeScript, not in the (separate) Python bot codebase.
 
-import { appendEntity, searchEntities, appendRelate, isRelType, type EntityRecord } from './graph';
+import { appendEntity, searchEntities, loadGraph, type EntityRecord } from './graph';
+import { linkRelationDraft } from '../scripts/backfill-relations';
 import { insertCandidate } from './procedural';
 import { levenshtein } from './levenshtein';
 import { nowIso } from './time';
@@ -37,11 +38,12 @@ export interface BotProceduralRawItem {
 }
 
 // Track 6 — the bot-produced candidate-edge shape. `from_label`/`to_label` are HUMAN-READABLE
-// labels (not ids); processRelations resolves each to an entity id via matchByLabel. `from_type`/
-// `to_type` are syntactically optional so an absent hint degrades gracefully (typed-then-widen
-// falls back to a type-agnostic scan), but they are LOAD-BEARING: EXTRACTION_PROMPT_GUIDANCE
+// labels (not ids); processRelations resolves each to an entity id via linkRelationDraft's
+// resolve-or-create (exact-label match, or MINT a node of the endpoint's type). `from_type`/
+// `to_type` are syntactically optional so an absent hint degrades gracefully (falls back to a
+// verb-derived type hint, then 'Fact'), but they are LOAD-BEARING: EXTRACTION_PROMPT_GUIDANCE
 // requires the bot to populate them on every draft (infra edges especially — see the infra
-// typing table there), and matchByLabel uses them to scope the candidate pool.
+// typing table there), because they type the node that gets minted for a not-yet-existing endpoint.
 export interface BotRelationDraftItem {
   from_label: string;
   rel: string;
@@ -139,7 +141,7 @@ function passesConfidence(confidence: number): boolean {
 // The 5 canonical entity types. The bot's LLM sometimes emits un-normalised casings
 // ('person', 'fact', 'preference'); storing those verbatim fragments the graph — a `person`
 // "Alex" and a `Person` "Alex" land in different type buckets, so the type-scoped dedup scan
-// never sees them as duplicates AND matchByLabel's typed-then-widen misses across the casing.
+// never sees them as duplicates AND relation resolution's same-type exact match misses across the casing.
 // normalizeEntityType folds any casing back to the canonical type; a value that is not one of the
 // five at all returns null (the entity is skipped rather than stored with a garbage type).
 const CANONICAL_ENTITY_TYPES = ['Person', 'Project', 'Deadline', 'Preference', 'Fact'] as const;
@@ -260,65 +262,32 @@ function processProcedural(digestRow: DigestRow): void {
   }
 }
 
-// matchByLabel — the label→entity resolver for edge ENDPOINTS (A2). Distinct from
-// processEntities' Levenshtein dedup scan (untouched): a fuzzy false-positive here mis-wires a
-// structural fact into the confirmed BFS — a worse failure than a dropped candidate — so the
-// Levenshtein-≤2 arm is DELIBERATELY ABSENT (W2). A 'mot'/'moi' decoy (distance 1, no exact
-// match) must NOT resolve.
-//
-// Two-stage match WITHIN a pool (W2 — exact-match-preferred):
-//   1. exact (case-insensitive, whitespace-trimmed) matches first;
-//   2. only on ZERO exact matches, fall back to prefix/suffix containment (shorter label ≥4
-//      chars, one label a prefix/suffix of the other).
-// The caller decides on count: 1 → resolved, >1 → ambiguous, 0 → unresolved.
-function matchInPool(needle: string, pool: EntityRecord[]): EntityRecord[] {
-  const target = needle.trim().toLowerCase();
-
-  const exact = pool.filter((e) => e.label.trim().toLowerCase() === target);
-  if (exact.length >= 1) return exact;
-
-  // Zero exact matches → prefix/suffix containment (both labels ≥4 chars via the shorter one).
-  return pool.filter((e) => {
-    const label = e.label.trim().toLowerCase();
-    const shorter = Math.min(target.length, label.length);
-    if (shorter < 4) return false;
-    return (
-      target.startsWith(label) ||
-      target.endsWith(label) ||
-      label.startsWith(target) ||
-      label.endsWith(target)
-    );
-  });
-}
-
-// matchByLabel — W1 typed-then-widen. When `type` is present, match within the same-type pool
-// first (searchEntities('', type) — the proven type-filtered active scan). "Candidates" means
-// LABEL-matches in that pool, not merely nodes of that type. Zero label-matches from the typed
-// scan → WIDEN to a type-agnostic scan (searchEntities('')) and match there — a mistyped/mismatched
-// hint never silently hard-drops a real edge (AC-19). When `type` is absent, the scan is
-// type-agnostic from the start.
-function matchByLabel(label: string, type?: EntityRecord['type']): EntityRecord[] {
-  if (type !== undefined) {
-    const typed = matchInPool(label, searchEntities('', type));
-    if (typed.length >= 1) return typed;
-    // Widen: zero same-type label-matches.
-    return matchInPool(label, searchEntities(''));
-  }
-  return matchInPool(label, searchEntities(''));
-}
-
 // processRelations — fan the relation_draft JSON text out into unconfirmed candidate `relate`
-// patches (FR9). Mirrors processEntities/processProcedural: never throws; a malformed draft warns
-// and returns so the entity/procedural passes for the same row are unaffected (EC5). Each candidate
-// is gated at passesConfidence (≥0.85), validated against the closed rel vocabulary, then has both
-// endpoints resolved via matchByLabel. Zero-match / >1-match (ambiguous) / self-relate / invalid-rel
-// are each skipped and logged. A clean pair appends confirmed:false, source:'session:<id>'.
+// patches (FR-6). Mirrors processEntities/processProcedural: never throws; a malformed draft warns
+// and returns so the entity/procedural passes for the same row are unaffected (EC5).
+//
+// RESOLVE-OR-CREATE (the FR-6 fix). The old implementation resolved each endpoint via matchByLabel
+// and DROPPED the edge when an endpoint matched zero or multiple nodes. Because the graph is
+// fact-SENTENCES ("Taylor has a Claude instance…") rather than named nodes, "Taylor" matched many
+// sentences by prefix and came back ambiguous — so every live edge was dropped (the 0-edge bug).
+// The fix reuses linkRelationDraft from scripts/backfill-relations.ts with create:true: an endpoint
+// that doesn't EXACT-match an existing node is MINTED as a canonical named node (confirmed:false,
+// source:'session:<id>'), then linked. New conversations grow the graph instead of dropping edges to
+// not-yet-existing endpoints. Resolution is exact-label-only (no fuzzy prefix fallback — that fuzzy
+// fallback was the original ambiguity that caused the 0-edge bug); linkRelationDraft's resolveOrCreate
+// enforces this, so we do NOT reintroduce matchByLabel here.
+//
+// OQ-5 known gap: if Taylor states a correction in conversation (e.g. "it's Alex not Maya"),
+// the live path may mint a "corrected" duplicate node. The nightly dedup worker (Track 9 Phase 3)
+// merges it next cycle. No special-casing in v1.
 function processRelations(digestRow: DigestRow): void {
   if (digestRow.relation_draft === null) return;
 
-  let items: BotRelationDraftItem[];
+  // Parse-guard identical to processEntities/processProcedural: a malformed draft warns and
+  // returns (EC5) so this row's entity/procedural passes are unaffected. linkRelationDraft also
+  // guards its own parse, but we mirror the sibling passes' warn-and-return here for a clear log.
   try {
-    items = JSON.parse(digestRow.relation_draft) as BotRelationDraftItem[];
+    JSON.parse(digestRow.relation_draft);
   } catch {
     console.warn(
       `[MOT/extraction] session ${digestRow.session_id}: relation_draft parse error — skipping`,
@@ -326,57 +295,20 @@ function processRelations(digestRow: DigestRow): void {
     return;
   }
 
-  for (const item of items) {
-    if (!passesConfidence(item.confidence)) {
-      console.warn(
-        `[MOT/extraction] relation below threshold (conf=${item.confidence}): ${item.from_label} ${item.rel} ${item.to_label}`,
-      );
-      continue;
-    }
+  // Fresh active-only working set; linkRelationDraft mutates this in place as it mints nodes, so an
+  // earlier edge's minted endpoint resolves for a later edge in the same draft.
+  const index = loadGraph().filter((e) => e.superseded_by === null);
+  // Per-call idempotency only — the live path fires once per digest; cross-run dedup is not needed.
+  const seenEdges = new Set<string>();
 
-    if (!isRelType(item.rel)) {
-      console.warn(
-        `[MOT/extraction] relation skipped — invalid rel "${item.rel}": ${item.from_label} → ${item.to_label}`,
-      );
-      continue;
-    }
+  const result = linkRelationDraft(digestRow.relation_draft, `session:${digestRow.session_id}`, index, {
+    dryRun: false,
+    create: true,
+    seenEdges,
+  });
 
-    const fromMatches = matchByLabel(item.from_label, item.from_type);
-    if (fromMatches.length === 0) {
-      console.warn(`[MOT/extraction] relation skipped — from_label unresolved: "${item.from_label}"`);
-      continue;
-    }
-    if (fromMatches.length > 1) {
-      console.warn(
-        `[MOT/extraction] relation skipped — from_label "${item.from_label}" ambiguous (${fromMatches.length} candidates)`,
-      );
-      continue;
-    }
-
-    const toMatches = matchByLabel(item.to_label, item.to_type);
-    if (toMatches.length === 0) {
-      console.warn(`[MOT/extraction] relation skipped — to_label unresolved: "${item.to_label}"`);
-      continue;
-    }
-    if (toMatches.length > 1) {
-      console.warn(
-        `[MOT/extraction] relation skipped — to_label "${item.to_label}" ambiguous (${toMatches.length} candidates)`,
-      );
-      continue;
-    }
-
-    const fromId = fromMatches[0].id;
-    const toId = toMatches[0].id;
-
-    if (fromId === toId) {
-      console.warn(
-        `[MOT/extraction] relation skipped — self-relate after resolution: "${item.from_label}" ${item.rel} "${item.to_label}"`,
-      );
-      continue;
-    }
-
-    // Candidate edge — always confirmed:false (confirmation is a separate step, FR9/A5).
-    appendRelate(fromId, item.rel, toId, item.confidence, `session:${digestRow.session_id}`, false);
+  for (const s of result.skipped) {
+    console.warn(`[MOT/extraction] relation skipped (${s.reason}): ${s.detail}`);
   }
 }
 

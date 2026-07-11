@@ -390,6 +390,76 @@ describe('Track 6 — edge core (lib/graph)', () => {
     expect(relatedEntities(from).map((e) => e.id)).toContain(to);
   });
 
+  it('Phase 2b: relatedEntities is bidirectional — an inbound edge (B→A) surfaces B from A', () => {
+    // Only B has an outbound edge, pointing AT A. Under the old outbound-only BFS, relatedEntities(A)
+    // was []; bidirectional traversal must now surface B (the Track 9 canonical-node inbound case).
+    const { from: b, to: a } = seedPair();
+    appendRelate(b, 'points_to', a, 0.9, 'manual', true);
+    // Outbound direction still works: A is reachable from B.
+    expect(relatedEntities(b).map((e) => e.id)).toContain(a);
+    // Inbound direction now works too: B is reachable from A (was [] before Phase 2b).
+    expect(relatedEntities(a).map((e) => e.id)).toContain(b);
+  });
+
+  it('Phase 2b: an UNCONFIRMED inbound edge is followed too (ambient model, both directions)', () => {
+    // The Track 9 resolution worker writes candidate (unconfirmed) points_to edges. They must be
+    // traversable inbound without a confirm step, exactly like unconfirmed outbound edges.
+    const { from: b, to: a } = seedPair();
+    appendRelate(b, 'points_to', a, 0.9, 'session:s', false);
+    expect(relatedEntities(a).map((e) => e.id)).toContain(b);
+  });
+
+  it('Phase 2b: the rel filter applies to inbound edges too', () => {
+    // A is the shared target. B points_to A (matches); C child_of A (does not match).
+    const a = appendEntity(entityInput({ label: 'A-target' }));
+    const b = appendEntity(entityInput({ label: 'B-src' }));
+    const c = appendEntity(entityInput({ label: 'C-src' }));
+    appendRelate(b.id, 'points_to', a.id, 0.9, 'manual', true);
+    appendRelate(c.id, 'child_of', a.id, 0.9, 'manual', true);
+    const pointsTo = relatedEntities(a.id, 'points_to', 1).map((e) => e.id);
+    expect(pointsTo).toContain(b.id);
+    expect(pointsTo).not.toContain(c.id); // filtered out — wrong rel, inbound direction
+  });
+
+  it('Phase 2b: confirmed-reached ordering holds for inbound-reached neighbours', () => {
+    // A is the shared target. viaUnconf points at A via an UNCONFIRMED edge but has higher entity
+    // confidence; viaConf points at A via a CONFIRMED edge with lower entity confidence. The
+    // confirmed-reached neighbour must sort first even though it's reached inbound (preference,
+    // not gate — same rule as the outbound AC-3b case).
+    const a = appendEntity(entityInput({ label: 'A-target' }));
+    const viaUnconf = appendEntity(entityInput({ label: 'via-unconfirmed', confidence: 0.99 }));
+    const viaConf = appendEntity(entityInput({ label: 'via-confirmed', confidence: 0.5 }));
+    appendRelate(viaUnconf.id, 'points_to', a.id, 0.9, 'session:s', false);
+    appendRelate(viaConf.id, 'points_to', a.id, 0.9, 'manual', true);
+    const ids = relatedEntities(a.id).map((e) => e.id);
+    expect(ids).toContain(viaUnconf.id);
+    expect(ids).toContain(viaConf.id);
+    expect(ids.indexOf(viaConf.id)).toBeLessThan(ids.indexOf(viaUnconf.id));
+  });
+
+  it('Phase 2b: bidirectional traversal stays cycle-safe when A→B and B→A both exist', () => {
+    // Both directions present AND both nodes point at each other. The visited guard must keep the
+    // start node out of its own result and not loop, even with the inbound arm now active.
+    const a = appendEntity(entityInput({ label: 'A' }));
+    const b = appendEntity(entityInput({ label: 'B' }));
+    appendRelate(a.id, 'knows', b.id, 0.9, 'manual', true);
+    appendRelate(b.id, 'knows', a.id, 0.9, 'manual', true);
+    const fromA = relatedEntities(a.id, undefined, 2).map((e) => e.id);
+    expect(fromA).not.toContain(a.id);
+    expect(fromA).toContain(b.id);
+    expect(fromA.filter((x) => x === b.id)).toHaveLength(1); // no duplicate
+  });
+
+  it('Phase 2b: an expired inbound edge does not surface (liveness respected inbound too)', () => {
+    // B points_to A, then the edge is rejected. attachRelations drops expired edges before the
+    // reverse index is built, so A must not see B via the inbound arm.
+    const { from: b, to: a } = seedPair();
+    appendRelate(b, 'points_to', a, 0.9, 'manual', true);
+    appendUnrelate(b, 'points_to', a);
+    expect(relatedEntities(a)).toEqual([]);
+    expect(relatedEntities(b)).toEqual([]);
+  });
+
   it('EC4: a duplicate relate triple folds to exactly one relations entry', () => {
     const { from, to } = seedPair();
     appendRelate(from, 'child_of', to, 0.9, 'manual', true);
