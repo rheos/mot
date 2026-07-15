@@ -15,6 +15,10 @@ import { execFileSync } from 'node:child_process';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-maint-dedup-'));
 const graphFile = path.join(tmpDir, 'graph.jsonl');
 process.env.MOT_GRAPH_PATH = graphFile;
+// Force a SMALL batch size so a same-type group larger than the batch spans multiple `identify`
+// calls (the scale fix chunks each type-group to ≤ MAINTAINER_BATCH_SIZE per call). Read once at
+// module load, so set before the dynamic import below.
+process.env.MAINTAINER_BATCH_SIZE = '2';
 
 const { dedupWorker, mergeGroup, computeRepointedEdges, repointEdges } = await import(
   '../../lib/maintainer'
@@ -62,6 +66,14 @@ function seedEntity(
     valid_until: null,
     superseded_by: null,
   });
+}
+
+// Pull the ENTITIES JSON array out of a worker prompt (the batch the caller handed the LLM). The
+// prompt is `<PROMPT_TEXT>\n\nENTITIES:\n<json>` — split on the marker, not on the first '[' (the
+// prompt template itself contains '[' characters).
+function parseEntitiesFromPrompt(prompt: string): Array<{ id: string; label: string }> {
+  const json = prompt.slice(prompt.indexOf('ENTITIES:\n') + 'ENTITIES:\n'.length);
+  return JSON.parse(json) as Array<{ id: string; label: string }>;
 }
 
 function readLines(): string[] {
@@ -430,6 +442,100 @@ describe('Track 9 Phase 3 — dedup worker (lib/maintainer)', () => {
       }
     }
     expect(relatedEntities(survA).map((n) => n.id)).not.toContain(b1.id);
+  });
+
+  it('scale — a same-type group larger than the batch is chunked; identify called once per sub-batch, merges aggregate', () => {
+    // Six DISTINCT-label Person entities (so the exact-(type,label) pre-merge does NOT touch them) →
+    // one Person type-group → chunked to 3 sub-batches of 2 at batch size 2. Each sub-batch is a
+    // genuine fuzzy duplicate pair the LLM merges. The identify stub returns a merge group for the
+    // pair IN THE BATCH it was handed (member ids echo the batch), proving per-sub-batch dispatch and
+    // aggregated merges across sub-batches.
+    resetGraph();
+    Array.from({ length: 6 }, (_, i) =>
+      seedEntity('Person', `Person${i}`, { confidence: i % 2 === 0 ? 0.95 : 0.8 }),
+    );
+    const identify = vi.fn().mockImplementation((prompt: string) => {
+      // Parse the batch the caller handed us (the JSON after the ENTITIES: marker) and merge its
+      // (exactly 2) members. Split on the marker — the prompt template itself contains '[' chars.
+      const batch = parseEntitiesFromPrompt(prompt);
+      return {
+        groups: [
+          {
+            canonical_label: batch[0].label,
+            canonical_type: 'Person',
+            member_ids: batch.map((e) => e.id),
+            confidence: 0.95,
+            reason: 'test fuzzy dup',
+          },
+        ],
+      };
+    });
+
+    const status = dedupWorker({ dryRun: false, identify });
+
+    // 6 Person entities / batch size 2 = 3 sub-batches → 3 identify calls (never one mega-prompt).
+    expect(identify).toHaveBeenCalledTimes(3);
+    // Each sub-batch merged its pair: 3 merges total, aggregated across sub-batches.
+    expect(status.entities_merged).toBe(3);
+    expect(status.batches_failed).toBe(0);
+    // Three survivors remain active (one per merged pair).
+    const activePeople = loadGraph().filter((e) => e.superseded_by === null && e.type === 'Person');
+    expect(activePeople).toHaveLength(3);
+  });
+
+  it('scale / EC-3 — one sub-batch throws; batches_failed increments and the other sub-batches still merge', () => {
+    // Same 6-distinct-Person fixture (3 sub-batches). The 2nd identify call throws (simulated OOM);
+    // the 1st and 3rd return valid merge groups. The failure bumps batches_failed and is skipped; the
+    // surviving sub-batches still merge their pairs — partial success, not an all-or-nothing abort.
+    resetGraph();
+    Array.from({ length: 6 }, (_, i) =>
+      seedEntity('Person', `Person${i}`, { confidence: i % 2 === 0 ? 0.95 : 0.8 }),
+    );
+    let call = 0;
+    const identify = vi.fn().mockImplementation((prompt: string) => {
+      const i = call++;
+      if (i === 1) throw new Error('simulated claude -p OOM on sub-batch 2');
+      const batch = parseEntitiesFromPrompt(prompt);
+      return {
+        groups: [
+          {
+            canonical_label: batch[0].label,
+            canonical_type: 'Person',
+            member_ids: batch.map((e) => e.id),
+            confidence: 0.95,
+            reason: 'test',
+          },
+        ],
+      };
+    });
+
+    const status = dedupWorker({ dryRun: false, identify });
+
+    expect(identify).toHaveBeenCalledTimes(3); // all three attempted — the throw did not abort the pass
+    expect(status.batches_failed).toBe(1);
+    expect(status.ok).toBe(false);
+    // Two sub-batches merged their pairs (the throwing one did not) → 2 merges, 4 survivors.
+    expect(status.entities_merged).toBe(2);
+    const activePeople = loadGraph().filter((e) => e.superseded_by === null && e.type === 'Person');
+    expect(activePeople).toHaveLength(4);
+  });
+
+  it('scale — a type-group at or below the batch size is a SINGLE identify call (unchanged behavior)', () => {
+    // Two distinct-label Person entities → one type-group of 2 → one batch (= batch size). Exactly one
+    // identify call, as before the batching change. (The stub merges them so the merge path still runs.)
+    resetGraph();
+    const p0 = seedEntity('Person', 'Alice', { confidence: 0.95 });
+    const p1 = seedEntity('Person', 'Alicia', { confidence: 0.8 });
+    const identify = vi.fn().mockReturnValue({
+      groups: [
+        { canonical_label: 'Alice', canonical_type: 'Person', member_ids: [p0.id, p1.id], confidence: 0.95, reason: 'test' },
+      ],
+    });
+
+    const status = dedupWorker({ dryRun: false, identify });
+
+    expect(identify).toHaveBeenCalledTimes(1); // single batch — no chunking for a ≤-batch group
+    expect(status.entities_merged).toBe(1);
   });
 
   it('W1 / FR-10 — a nested object value under a shared key is NOT lost on merge (deep union)', () => {

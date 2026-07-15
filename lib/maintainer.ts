@@ -65,6 +65,28 @@ export function identifyViaClaude(prompt: string): unknown {
   return JSON.parse(clean.slice(start, end));
 }
 
+// ── Batch size (scale fix) ──────────────────────────────────────────────────────
+// How many entities go into a SINGLE `claude -p` prompt. The v1 workers sent the ENTIRE active
+// set (~182 entities, full properties) in one prompt; on the 1.9GB-RAM prod box (~788MB free) that
+// one invocation is OOM-killed in ~3s (SIGTERM/exit 143). A small prompt runs fine, so the workers
+// now BATCH: send ≤ MAINTAINER_BATCH_SIZE entities per call, sequentially (never concurrent — two
+// live `claude -p` processes would multiply the memory the box can't spare), and aggregate.
+// Env-configurable so the batch size can be tuned on the box without a redeploy; guarded against
+// 0/NaN/negative (any of which would make chunk() loop forever or send an empty prompt).
+const MAINTAINER_BATCH_SIZE =
+  Number.isFinite(Number(process.env.MAINTAINER_BATCH_SIZE)) &&
+  Number(process.env.MAINTAINER_BATCH_SIZE) > 0
+    ? Math.floor(Number(process.env.MAINTAINER_BATCH_SIZE))
+    : 25;
+
+// Split an array into consecutive chunks of at most `size`. Pure; size is always ≥1 here (the
+// constant above guarantees it), so no zero-size infinite-loop risk.
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 // ── Status file (Phase 4) ──────────────────────────────────────────────────────
 // The observable last-run summary for both workers. Written after every worker run (nightly
 // cron OR on-demand maintainer_run), read by the maintainer_status MCP tool. The file lives
@@ -241,8 +263,11 @@ RULES:
  * ever spawns a real model. All LLM access in the body goes through `identify`, never the
  * module-level function directly.
  *
- * Single-batch send: the entire active-entity list (~138 entities) is one `identify` call. Batching
- * is a deliberate v2 concern — at this scale one batch is simpler and correct.
+ * Batched send: the active-entity list is split into chunks of MAINTAINER_BATCH_SIZE and each chunk
+ * is one sequential `identify` call (never concurrent — a second live `claude -p` would multiply the
+ * memory the prod box can't spare). Identifications aggregate across batches; the existing
+ * deterministic mint/link step then runs ONCE over the aggregate. A batch that throws logs, bumps
+ * batches_failed, and is skipped — the rest still run (EC-3).
  */
 export function resolutionWorker({
   dryRun,
@@ -279,20 +304,27 @@ export function resolutionWorker({
     }
   }
 
-  // 3. LLM identify — the whole active list is one batch. EC-3: a failed batch logs, increments
-  //    batches_failed, and returns the (empty) partial status; the graph is untouched (no write ran).
-  let identifications: IdentificationItem[];
-  try {
-    const raw = identify(RESOLUTION_PROMPT + '\n\nENTITIES:\n' + JSON.stringify(actives));
-    const parsed = (raw ?? {}) as { identifications?: IdentificationItem[] };
-    identifications = Array.isArray(parsed.identifications) ? parsed.identifications : [];
-  } catch (err) {
-    console.error('[MOT/maintainer] resolution batch failed:', err);
-    status.batches_failed += 1;
-    status.ok = false;
-    status.error = String(err);
-    persistResolutionStatus(status, dryRun);
-    return status;
+  // 3. LLM identify — BATCHED. Split the active list into chunks of MAINTAINER_BATCH_SIZE and call
+  //    `identify` once per chunk, SEQUENTIALLY, aggregating the identifications. Each batch is in its
+  //    own try/catch: a failed batch logs, bumps batches_failed, and is skipped — the others still
+  //    run (EC-3). Cross-batch caveat: a canonical subject whose member Facts are split across two
+  //    batches may be identified (and minted) once PER batch, minting two nodes for one real thing;
+  //    the dedup worker's exact-(type,label) pre-merge and a later resolution pass collapse the pair.
+  //    Accepted for MVP — the merge is lossless and the duplicate is transient.
+  const identifications: IdentificationItem[] = [];
+  for (const batch of chunk(actives, MAINTAINER_BATCH_SIZE)) {
+    try {
+      const raw = identify(RESOLUTION_PROMPT + '\n\nENTITIES:\n' + JSON.stringify(batch));
+      const parsed = (raw ?? {}) as { identifications?: IdentificationItem[] };
+      if (Array.isArray(parsed.identifications)) identifications.push(...parsed.identifications);
+    } catch (err) {
+      console.error('[MOT/maintainer] resolution batch failed:', err);
+      status.batches_failed += 1;
+      status.ok = false;
+      status.error = String(err);
+      // EC-3 — do NOT return; the remaining batches (and the deterministic mint step below over
+      // whatever DID identify) still run.
+    }
   }
 
   for (const ident of identifications) {
@@ -620,8 +652,10 @@ RULES:
  * spawns a real `claude -p`. All LLM access in the body goes through `identify`.
  *
  * Sequence: own .bak snapshot (skipped in dry-run) → deterministic exact-(type,label) pre-merge pass
- * (no LLM, handles EC-6 concurrent-mint duplicates) → LLM dedup pass over the survivors (per-type
- * batches, each in its own try/catch — EC-3). Each group is DECIDED (mergeGroup → appendSupersede,
+ * (no LLM, handles EC-6 concurrent-mint duplicates) → LLM dedup pass over the survivors (grouped by
+ * type, then each type-group CHUNKED to ≤ MAINTAINER_BATCH_SIZE entities per `claude -p` call so the
+ * prompt fits the prod box RAM — sequential calls, each in its own try/catch — EC-3). Each group is
+ * DECIDED (mergeGroup → appendSupersede,
  * skipping already-superseded — FR-19 idempotency → persist the survivor's unioned properties),
  * accumulating every dup→survivor into ONE pass-wide `mergedAwayMap`. The edge re-point fires ONCE at
  * the end over that COMPLETE map (EC-12) — NOT once per group with a single-entry map, which left an
@@ -707,19 +741,33 @@ export function dedupWorker({
   }
 
   // 2. LLM dedup pass over the survivors. Reload actives AFTER the pre-merge (some ids are now
-  //    superseded). Group by normalized type and send each type-group to the LLM in its own
-  //    try/catch (EC-3: a failed batch logs, increments batches_failed, and the pass continues).
+  //    superseded). Group by type (duplicates are same-type), then CHUNK each type-group to
+  //    ≤ MAINTAINER_BATCH_SIZE entities per `claude -p` call so the prompt fits the prod box RAM —
+  //    a type-group ≤ batch size is one call; a larger one is split into sub-batches. Calls are
+  //    SEQUENTIAL, each in its own try/catch (EC-3: a failed batch logs, bumps batches_failed, and
+  //    the pass continues). Cross-batch caveat: duplicates split across two sub-batches of a large
+  //    same-type group are missed on THIS pass — BUT the deterministic exact-(type,label) pre-merge
+  //    above already caught every exact dup regardless of chunking, and the next nightly run (with a
+  //    freshly-shuffled active set as merges land) catches the rest. Accepted for MVP.
   const survivors = loadGraph().filter((e) => e.superseded_by === null);
   const byType = new Map<string, EntityRecord[]>();
   for (const e of survivors) {
     (byType.get(e.type) ?? byType.set(e.type, []).get(e.type)!).push(e);
   }
 
+  // Flatten to the actual per-call batches: one type-group when it fits, else its sub-chunks. A
+  // batch with <2 entities can't hold a same-type duplicate, so it's dropped before the LLM call.
+  const batches: EntityRecord[][] = [];
   for (const group of byType.values()) {
-    if (group.length < 2) continue; // a lone entity of a type can't have a same-type duplicate
+    for (const sub of chunk(group, MAINTAINER_BATCH_SIZE)) {
+      if (sub.length >= 2) batches.push(sub);
+    }
+  }
+
+  for (const batch of batches) {
     let groups: DedupGroup[];
     try {
-      const raw = identify(DEDUP_PROMPT + '\n\nENTITIES:\n' + JSON.stringify(group));
+      const raw = identify(DEDUP_PROMPT + '\n\nENTITIES:\n' + JSON.stringify(batch));
       const parsed = (raw ?? {}) as { groups?: DedupGroup[] };
       groups = Array.isArray(parsed.groups) ? parsed.groups : [];
     } catch (err) {
@@ -727,7 +775,7 @@ export function dedupWorker({
       status.batches_failed += 1;
       status.ok = false;
       status.error = String(err);
-      continue; // EC-3 — next type batch still runs
+      continue; // EC-3 — next batch still runs
     }
 
     for (const g of groups) {
