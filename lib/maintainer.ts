@@ -307,10 +307,10 @@ export function resolutionWorker({
   // 3. LLM identify — BATCHED. Split the active list into chunks of MAINTAINER_BATCH_SIZE and call
   //    `identify` once per chunk, SEQUENTIALLY, aggregating the identifications. Each batch is in its
   //    own try/catch: a failed batch logs, bumps batches_failed, and is skipped — the others still
-  //    run (EC-3). Cross-batch caveat: a canonical subject whose member Facts are split across two
-  //    batches may be identified (and minted) once PER batch, minting two nodes for one real thing;
-  //    the dedup worker's exact-(type,label) pre-merge and a later resolution pass collapse the pair.
-  //    Accepted for MVP — the merge is lossless and the duplicate is transient.
+  //    run (EC-3). Cross-batch caveat: a canonical subject split across two batches may be minted once
+  //    PER batch — two SAME-LABEL nodes for one real thing. The dedup worker's exact-(type,label)
+  //    pre-merge collapses that identical-label pair, and the nightly cron runs resolution → dedup in
+  //    the same nightly pass, so a double-mint is closed the same night. Lossless + transient (MVP).
   const identifications: IdentificationItem[] = [];
   for (const batch of chunk(actives, MAINTAINER_BATCH_SIZE)) {
     try {
@@ -745,10 +745,16 @@ export function dedupWorker({
   //    ≤ MAINTAINER_BATCH_SIZE entities per `claude -p` call so the prompt fits the prod box RAM —
   //    a type-group ≤ batch size is one call; a larger one is split into sub-batches. Calls are
   //    SEQUENTIAL, each in its own try/catch (EC-3: a failed batch logs, bumps batches_failed, and
-  //    the pass continues). Cross-batch caveat: duplicates split across two sub-batches of a large
-  //    same-type group are missed on THIS pass — BUT the deterministic exact-(type,label) pre-merge
-  //    above already caught every exact dup regardless of chunking, and the next nightly run (with a
-  //    freshly-shuffled active set as merges land) catches the rest. Accepted for MVP.
+  //    the pass continues). Cross-batch caveat: a FUZZY (non-exact-label) duplicate pair split across
+  //    two sub-batches of a single same-type group larger than MAINTAINER_BATCH_SIZE is never seen
+  //    together by one `claude -p` call, so it is missed — and because loadGraph() returns STABLE
+  //    insertion order, the chunk boundaries are identical every run, so it stays missed (not just
+  //    "next pass"). This is bounded + SAFE: exact-label dups are caught by the deterministic pre-merge
+  //    above regardless of chunking; the only un-caught case is a fuzzy dup inside one oversized
+  //    type-group, and its failure mode is OVER-RETENTION (two similar entities kept — never a wrong
+  //    merge, never a lost fact), which is consistent with the memory-is-forever invariant. Accepted
+  //    for MVP (no type-group is near the default 25 at current scale). Future: randomize group order
+  //    before chunking so successive nights eventually pair a straddling fuzzy dup.
   const survivors = loadGraph().filter((e) => e.superseded_by === null);
   const byType = new Map<string, EntityRecord[]>();
   for (const e of survivors) {
