@@ -12,6 +12,10 @@ import path from 'node:path';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-maint-res-'));
 const graphFile = path.join(tmpDir, 'graph.jsonl');
 process.env.MOT_GRAPH_PATH = graphFile;
+// Force a SMALL batch size so a modest fixture spans multiple `identify` calls (the scale fix
+// batches the active list into chunks of MAINTAINER_BATCH_SIZE). The constant is read once at module
+// load, so this MUST be set before the dynamic import below.
+process.env.MAINTAINER_BATCH_SIZE = '2';
 
 const { resolutionWorker } = await import('../../lib/maintainer');
 const { appendEntity, loadGraph, relatedEntities, getEntity, searchEntities } = await import(
@@ -76,8 +80,10 @@ describe('Track 9 Phase 2 — resolution worker (lib/maintainer)', () => {
 
     const status = resolutionWorker({ dryRun: false, identify: stubIdentify });
 
-    // The stub was consulted (never a real claude -p) and one node was minted.
-    expect(stubIdentify).toHaveBeenCalledTimes(1);
+    // The stub was consulted (never a real claude -p). 5 Facts at batch size 2 → 3 batches → 3 calls;
+    // the aggregate still mints ONE node and links 5 edges (exact-label reuse + seenEdges idempotency
+    // collapse the repeated identical identification).
+    expect(stubIdentify).toHaveBeenCalledTimes(3);
     expect(status.named_nodes_minted).toBe(1);
     expect(status.edges_linked).toBe(5);
 
@@ -186,6 +192,89 @@ describe('Track 9 Phase 2 — resolution worker (lib/maintainer)', () => {
     }
   });
 
+  it('scale — identify is called once PER batch and results aggregate across batches', () => {
+    // 6 Facts at batch size 2 → 3 batches. The stub returns a DIFFERENT subject per batch (Taylor,
+    // SampleApp, rheo) so the aggregate must carry all three identifications: 3 minted nodes and 6
+    // linked edges (2 members each). This proves the caller batches the send and merges the results.
+    resetGraph();
+    const facts = Array.from({ length: 6 }, (_, i) => seedFact(`fact ${i}: subject ${Math.floor(i / 2)}`));
+    const perBatch = [
+      { canonical_label: 'Taylor', canonical_type: 'Person' as const, members: [facts[0].id, facts[1].id] },
+      { canonical_label: 'SampleApp', canonical_type: 'Project' as const, members: [facts[2].id, facts[3].id] },
+      { canonical_label: 'rheo', canonical_type: 'Project' as const, members: [facts[4].id, facts[5].id] },
+    ];
+    let call = 0;
+    const stubIdentify = vi.fn().mockImplementation(() => {
+      const b = perBatch[call++] ?? perBatch[perBatch.length - 1];
+      return {
+        identifications: [
+          {
+            canonical_label: b.canonical_label,
+            canonical_type: b.canonical_type,
+            existing_representative_id: null,
+            member_entity_ids: b.members,
+            distinct_source_count: b.members.length,
+            confidence: 0.9,
+            reason: 'test',
+          },
+        ],
+      };
+    });
+
+    const status = resolutionWorker({ dryRun: false, identify: stubIdentify });
+
+    // One call per batch — never a single mega-prompt.
+    expect(stubIdentify).toHaveBeenCalledTimes(3);
+    // All three subjects minted and all six member Facts linked (aggregated across batches).
+    // SampleApp/rheo need distinct_source_count ≥ 3 to mint (Project threshold), but 2 < 3 → they are
+    // NOT minted; only Taylor (Person, threshold 2) mints. So assert the Person aggregate precisely.
+    expect(status.batches_failed).toBe(0);
+    expect(searchEntities('Taylor', 'Person')).toHaveLength(1);
+    expect(status.named_nodes_minted).toBe(1); // only Taylor clears its threshold (Person=2)
+    expect(status.edges_linked).toBe(2); // Taylor's two members linked
+  });
+
+  it('scale / EC-3 — a batch that THROWS increments batches_failed; the other batches still mint', () => {
+    // 6 Facts at batch size 2 → 3 batches. The MIDDLE identify call throws; the first and third
+    // still return a valid Person identification. The failure bumps batches_failed and is skipped;
+    // the surviving batches mint their nodes (partial success, not an all-or-nothing abort).
+    resetGraph();
+    const facts = Array.from({ length: 6 }, (_, i) => seedFact(`fact ${i}`));
+    // Batch 1 → Taylor (facts 0,1); batch 2 → throws; batch 3 → Casey (facts 4,5). Both are Person
+    // (threshold 2) so both mint when their batch succeeds.
+    let call = 0;
+    const stubIdentify = vi.fn().mockImplementation(() => {
+      const i = call++;
+      if (i === 1) throw new Error('simulated claude -p OOM on batch 2');
+      const label = i === 0 ? 'Taylor' : 'Casey';
+      const members = i === 0 ? [facts[0].id, facts[1].id] : [facts[4].id, facts[5].id];
+      return {
+        identifications: [
+          {
+            canonical_label: label,
+            canonical_type: 'Person',
+            existing_representative_id: null,
+            member_entity_ids: members,
+            distinct_source_count: 2,
+            confidence: 0.9,
+            reason: 'test',
+          },
+        ],
+      };
+    });
+
+    const status = resolutionWorker({ dryRun: false, identify: stubIdentify });
+
+    expect(stubIdentify).toHaveBeenCalledTimes(3); // all three attempted — no early return on failure
+    expect(status.batches_failed).toBe(1); // the throwing batch counted
+    expect(status.ok).toBe(false); // a failed batch flips ok
+    // The two SUCCESSFUL batches still minted their nodes (EC-3 partial success).
+    expect(searchEntities('Taylor', 'Person')).toHaveLength(1);
+    expect(searchEntities('Casey', 'Person')).toHaveLength(1);
+    expect(status.named_nodes_minted).toBe(2);
+    expect(status.edges_linked).toBe(4);
+  });
+
   it('FR-13 / AC-9 — dry_run runs identify but writes nothing', () => {
     resetGraph();
     const facts = Array.from({ length: 3 }, (_, i) => seedFact(`Taylor fact ${i}`));
@@ -194,8 +283,10 @@ describe('Track 9 Phase 2 — resolution worker (lib/maintainer)', () => {
 
     const status = resolutionWorker({ dryRun: true, identify: stubIdentify });
 
-    // The LLM identification step still runs in dry-run (operator review) …
-    expect(stubIdentify).toHaveBeenCalledTimes(1);
+    // The LLM identification step still runs in dry-run (operator review) — once PER batch (3 Facts at
+    // batch size 2 → 2 batches). The repeated identical identification collapses via exact-label reuse
+    // + seenEdges, so the WOULD-write counts below are still 1 node / 3 edges.
+    expect(stubIdentify).toHaveBeenCalledTimes(2);
     // … but ZERO graph writes happen — the file is unchanged and no node was persisted.
     expect(graphLineCount()).toBe(before);
     expect(searchEntities('Taylor', 'Person')).toHaveLength(0);
