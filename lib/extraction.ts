@@ -127,6 +127,13 @@ RELATIONS (relation_draft):
     hosts / boxes / domains / subdomains / accounts / groupings
       (passive infrastructure other things sit on or point at)      → 'Fact'
     people → 'Person'; schedule items → 'Deadline'; stated preferences → 'Preference'
+
+DEADLINE ENTITIES (type: 'Deadline'):
+- When you emit a Deadline entity, you MUST populate properties.date with the deadline's
+  calendar date as an ISO string "YYYY-MM-DD" (e.g. { "date": "2026-09-15" }).
+- This is the ONLY key the surfacing scan reads. A Deadline with no properties.date, or a
+  non-ISO value, will never surface a reminder. If Taylor did not state a concrete date, do
+  not invent one — omit the Deadline or emit it without a date.
 `.trim();
 
 // EC-5 — confidence gate at >= 0.85. Direct float comparison: 0.9 and 0.85 pass, 0.8499 fails.

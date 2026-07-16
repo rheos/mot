@@ -12,10 +12,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // Test reach: the step lives inside the anonymous callback passed to schedule('0 2 * * *', ...) —
 // never exported. So we vi.mock('node-cron') to capture the callback and invoke it directly.
 
-const scheduledCallbacks: Array<() => unknown> = [];
+// As of Track 7, scheduleNightly() registers TWO schedule() calls (02:00 maintenance + the
+// SURFACING_SEND_HOUR daytime surfacing cron). Capture callbacks KEYED BY CRON EXPRESSION so the
+// existing tests pin to '0 2 * * *' by name, regardless of registration order.
+const scheduledCallbacks: Record<string, () => unknown> = {};
+// Track 7 — also CAPTURE the options (third) arg per cron expression. The surfacing schedule() call
+// passes { timezone } as its third arg and that arg is LOAD-BEARING (without it the UTC prod box
+// fires '0 8 * * *' at 08:00 UTC ≈ 00:00–01:00 Pacific, inside quiet hours → silently inert forever).
+// A node-cron mock that DISCARDED the third arg would keep every test green if someone deleted
+// { timezone }; capturing it lets the regression-guard test below fail on that drop.
+const scheduledOptions: Record<string, unknown> = {};
 vi.mock('node-cron', () => ({
-  schedule: vi.fn((_expr: string, cb: () => unknown) => {
-    scheduledCallbacks.push(cb);
+  schedule: vi.fn((expr: string, cb: () => unknown, options?: unknown) => {
+    scheduledCallbacks[expr] = cb;
+    scheduledOptions[expr] = options;
     return { stop: vi.fn() };
   }),
 }));
@@ -58,13 +68,34 @@ vi.mock('../../lib/maintainer', () => ({
   writeStatus: vi.fn(),
 }));
 
+// Track 7 — mock runSurfacing so the surfacing cron wiring is tested in isolation (no real scan,
+// no graph read, no send). Default: a valid zero-state summary; individual tests override.
+const runSurfacing = vi.fn(async (_opts?: { dryRun?: boolean; horizonDays?: number }) => ({
+  scanned: 0,
+  wouldSurface: [],
+  sent: 0,
+  skipped: 0,
+  disabled: false,
+}));
+vi.mock('../../lib/surfacing', () => ({
+  runSurfacing: (opts?: { dryRun?: boolean; horizonDays?: number }) => runSurfacing(opts),
+}));
+
 const { scheduleNightly } = await import('../../lib/backup');
 
 async function runNightly(): Promise<void> {
-  scheduledCallbacks.length = 0;
+  for (const key of Object.keys(scheduledCallbacks)) {
+    delete scheduledCallbacks[key];
+  }
+  for (const key of Object.keys(scheduledOptions)) {
+    delete scheduledOptions[key];
+  }
   scheduleNightly();
-  expect(scheduledCallbacks).toHaveLength(1);
-  await scheduledCallbacks[0]();
+  // Both crons must register.
+  expect(Object.keys(scheduledCallbacks)).toHaveLength(2);
+  expect(scheduledCallbacks['0 2 * * *']).toBeDefined();
+  // Run the 02:00 maintenance callback (the subject of all existing tests).
+  await scheduledCallbacks['0 2 * * *']();
 }
 
 let logSpy = vi.spyOn(console, 'log');
@@ -91,9 +122,18 @@ beforeEach(() => {
     batches_failed: 0,
     error: null,
   }));
+  runSurfacing.mockClear();
+  runSurfacing.mockImplementation(async () => ({
+    scanned: 0,
+    wouldSurface: [],
+    sent: 0,
+    skipped: 0,
+    disabled: false,
+  }));
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
+  delete process.env.SURFACING_ENABLE;
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -104,6 +144,7 @@ afterEach(() => {
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
+  delete process.env.SURFACING_ENABLE;
 });
 
 function loggedLines(): string[] {
@@ -244,5 +285,70 @@ describe('scheduleNightly — Track 9 Maintainer workers (isolation + disable sw
 
     expect(resolutionWorker).toHaveBeenCalledWith({ dryRun: false });
     expect(dedupWorker).toHaveBeenCalledWith({ dryRun: false });
+  });
+});
+
+describe('scheduleNightly — Track 7 surfacing cron registration', () => {
+  it('registers TWO schedule() calls: one at 0 2 * * * and one at the daytime hour', async () => {
+    for (const key of Object.keys(scheduledCallbacks)) {
+      delete scheduledCallbacks[key];
+    }
+    scheduleNightly();
+    expect(Object.keys(scheduledCallbacks)).toHaveLength(2);
+    expect(scheduledCallbacks['0 2 * * *']).toBeDefined();
+    // The daytime cron key depends on SURFACING_SEND_HOUR (default 8).
+    const sendHour = process.env.SURFACING_SEND_HOUR ?? '8';
+    const dayKey = `0 ${Number.parseInt(sendHour, 10)} * * *`;
+    expect(scheduledCallbacks[dayKey]).toBeDefined();
+  });
+
+  it('the daytime cron callback invokes runSurfacing({ dryRun: false })', async () => {
+    for (const key of Object.keys(scheduledCallbacks)) {
+      delete scheduledCallbacks[key];
+    }
+    scheduleNightly();
+    const sendHour = process.env.SURFACING_SEND_HOUR ?? '8';
+    const dayKey = `0 ${Number.parseInt(sendHour, 10)} * * *`;
+    expect(scheduledCallbacks[dayKey]).toBeDefined();
+    runSurfacing.mockClear();
+    await scheduledCallbacks[dayKey]();
+    expect(runSurfacing).toHaveBeenCalledWith({ dryRun: false });
+  });
+
+  it('a runSurfacing failure is caught and does NOT throw out of the daytime callback', async () => {
+    for (const key of Object.keys(scheduledCallbacks)) {
+      delete scheduledCallbacks[key];
+    }
+    scheduleNightly();
+    const sendHour = process.env.SURFACING_SEND_HOUR ?? '8';
+    const dayKey = `0 ${Number.parseInt(sendHour, 10)} * * *`;
+    runSurfacing.mockRejectedValueOnce(new Error('surfacing boom'));
+    await expect(scheduledCallbacks[dayKey]()).resolves.not.toThrow();
+  });
+
+  // ── REGRESSION GUARD — the load-bearing { timezone } third arg on the surfacing cron ─────────
+  // Without { timezone }, the UTC prod box fires '0 8 * * *' at 08:00 UTC (≈ 00:00–01:00 Pacific,
+  // inside the 21→08 quiet window) → runSurfacing defers every send forever, silently. This test
+  // fails if a future change drops that arg. It also pins that the 02:00 maintenance call stays
+  // optionless (it has no TZ requirement).
+  it('passes { timezone } to the surfacing schedule() call, and NO options to the 02:00 maintenance call', async () => {
+    for (const key of Object.keys(scheduledCallbacks)) {
+      delete scheduledCallbacks[key];
+    }
+    for (const key of Object.keys(scheduledOptions)) {
+      delete scheduledOptions[key];
+    }
+    scheduleNightly();
+
+    const sendHour = process.env.SURFACING_SEND_HOUR ?? '8';
+    const dayKey = `0 ${Number.parseInt(sendHour, 10)} * * *`;
+
+    // The surfacing cron got an options object with a defined timezone.
+    const surfacingOpts = scheduledOptions[dayKey] as { timezone?: unknown } | undefined;
+    expect(surfacingOpts).toBeDefined();
+    expect(surfacingOpts?.timezone).toBeDefined();
+
+    // The 02:00 maintenance cron stays optionless (no TZ requirement — it runs at 02:00 UTC).
+    expect(scheduledOptions['0 2 * * *']).toBeUndefined();
   });
 });

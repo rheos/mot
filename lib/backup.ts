@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { getDb } from '../db/client';
 import { compactGraph } from './graph-compact';
 import { resolutionWorker, dedupWorker } from './maintainer';
+import { runSurfacing } from './surfacing';
 // NOTE: prunePendingProcedural / prunePendingEntities are intentionally NOT imported here anymore.
 // The nightly job no longer disuse-prunes memories — persistence is a hard product requirement
 // (a fact Taylor stated once must survive indefinitely, even if never referenced again). The prune
@@ -137,6 +138,38 @@ export function scheduleNightly(): void {
       console.error('[MOT/nightly] dedup worker failed:', e);
     }
   });
+
+  // ── Track 7 — Proactive surfacing (SEPARATE daytime cron; FR-1/FR-10/D3) ─────
+  // A SECOND schedule() so surfacing sends in the morning, NOT at 02:00 UTC. Its own try/catch
+  // (mirroring the maintainer workers) isolates a surfacing failure from the rest of the job.
+  // The 02:00 cron above is UNCHANGED (no surfacing step added there).
+  //
+  // The third `{ timezone }` arg is LOAD-BEARING: the prod box runs UTC, so without it
+  // '0 8 * * *' would fire at 08:00 UTC (≈ 00:00–01:00 Pacific — INSIDE the 21:00–08:00 quiet
+  // window) and runSurfacing's quiet-hours guard would silently defer every send forever. With
+  // it, the cron fires at SURFACING_SEND_HOUR in SURFACING_TZ (default 08:00 America/Vancouver).
+  // Both SURFACING_SEND_HOUR and SURFACING_TZ are read HERE at schedule-registration time (boot);
+  // changing either needs a service restart, identical to how the 02:00 expression is fixed at boot.
+  const sendHour = (() => {
+    const h = Number.parseInt(process.env.SURFACING_SEND_HOUR ?? '', 10);
+    return Number.isInteger(h) && h >= 0 && h <= 23 ? h : 8;
+  })();
+  const surfacingTz = process.env.SURFACING_TZ ?? 'America/Vancouver';
+  schedule(
+    `0 ${sendHour} * * *`,
+    async () => {
+      try {
+        await runSurfacing({ dryRun: false });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[MOT/surfacing] cron failed:', e);
+      }
+    },
+    { timezone: surfacingTz },
+  );
+
   // eslint-disable-next-line no-console
-  console.log('[MOT] Nightly backup scheduled (02:00 daily).');
+  console.log(
+    `[MOT] Nightly backup scheduled (02:00 UTC daily); surfacing scheduled (${sendHour}:00 Pacific daily).`,
+  );
 }
