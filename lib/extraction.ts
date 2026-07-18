@@ -141,7 +141,7 @@ DEADLINE ENTITIES (type: 'Deadline'):
 // rounds 0.8499 UP to 0.85 and would admit it — directly contradicting EC-5's stated outcome
 // (the 0.8499 "inferred from tone" item must be rejected). The direct comparison is the behavior
 // the spec and the dictated test both require, so it wins over the rounding formula.
-function passesConfidence(confidence: number): boolean {
+export function passesConfidence(confidence: number): boolean {
   return confidence >= 0.85;
 }
 
@@ -152,9 +152,42 @@ function passesConfidence(confidence: number): boolean {
 // normalizeEntityType folds any casing back to the canonical type; a value that is not one of the
 // five at all returns null (the entity is skipped rather than stored with a garbage type).
 const CANONICAL_ENTITY_TYPES = ['Person', 'Project', 'Deadline', 'Preference', 'Fact'] as const;
-function normalizeEntityType(raw: unknown): EntityRecord['type'] | null {
+export function normalizeEntityType(raw: unknown): EntityRecord['type'] | null {
   const t = String(raw ?? '').trim().toLowerCase();
   return CANONICAL_ENTITY_TYPES.find((c) => c.toLowerCase() === t) ?? null;
+}
+
+// Type-scoped dedup scan, shared by the digest extraction pass (processEntities) and the
+// Track-8 entity_ingest MCP tool. Returns the ids of same-type active entities that are likely
+// duplicates of `label` — a Levenshtein distance ≤2 match, OR a prefix/suffix containment where
+// the shorter label is ≥4 chars (so short labels don't false-match on a common prefix). The
+// caller folds the returned ids into `properties.probable_duplicate_of` (spread-merge, never a
+// bare reassignment — that would clobber caller keys like properties.date). Extracted verbatim
+// from the old inline loop; behavior is preserved.
+export function scanForDuplicates(label: string, type: EntityRecord['type']): string[] {
+  const sameType = searchEntities('', type);
+  if (sameType.length >= 1000) {
+    console.warn(
+      `[MOT/extraction] dedup scan large: ${sameType.length} active "${type}" entities — proceeding`,
+    );
+  }
+  const dupIds: string[] = [];
+  const incomingLower = label.toLowerCase();
+  for (const existing of sameType) {
+    const existingLower = existing.label.toLowerCase();
+    const dist = levenshtein(incomingLower, existingLower);
+    const shorter = Math.min(incomingLower.length, existingLower.length);
+    const prefixOrSuffix =
+      shorter >= 4 &&
+      (incomingLower.startsWith(existingLower) ||
+        incomingLower.endsWith(existingLower) ||
+        existingLower.startsWith(incomingLower) ||
+        existingLower.endsWith(incomingLower));
+    if (dist <= 2 || prefixOrSuffix) {
+      dupIds.push(existing.id);
+    }
+  }
+  return dupIds;
 }
 
 // Process the entity_draft JSON text → appendEntity for each item that clears the gate.
@@ -193,31 +226,10 @@ function processEntities(digestRow: DigestRow): void {
     item.type = normType;
 
     // Dedup scan: find same-type active entities that are likely duplicates of this label.
-    // searchEntities('', type) with an empty q matches all active entities of that type
-    // (empty needle → haystack.includes('') is always true; active-only is the default branch
-    // at graph.ts:200). This usage is deliberate — OQ-2 confirmed.
-    const sameType = searchEntities('', item.type);
-    if (sameType.length >= 1000) {
-      console.warn(
-        `[MOT/extraction] dedup scan large: ${sameType.length} active "${item.type}" entities — proceeding`,
-      );
-    }
-    const dupIds: string[] = [];
-    const incomingLower = item.label.toLowerCase();
-    for (const existing of sameType) {
-      const existingLower = existing.label.toLowerCase();
-      const dist = levenshtein(incomingLower, existingLower);
-      const shorter = Math.min(incomingLower.length, existingLower.length);
-      const prefixOrSuffix =
-        shorter >= 4 &&
-        (incomingLower.startsWith(existingLower) ||
-          incomingLower.endsWith(existingLower) ||
-          existingLower.startsWith(incomingLower) ||
-          existingLower.endsWith(incomingLower));
-      if (dist <= 2 || prefixOrSuffix) {
-        dupIds.push(existing.id);
-      }
-    }
+    // scanForDuplicates('', type) matches all active entities of that type (empty needle →
+    // haystack.includes('') is always true; active-only is the default branch at graph.ts:200).
+    // This usage is deliberate — OQ-2 confirmed. Shared with the Track-8 entity_ingest tool.
+    const dupIds = scanForDuplicates(item.label, item.type);
     if (dupIds.length > 0) {
       item.properties = { ...item.properties, probable_duplicate_of: dupIds };
     }

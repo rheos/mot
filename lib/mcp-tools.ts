@@ -5,10 +5,12 @@ import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory, searchActiveMemoryVector, searchActiveMemoryHybrid } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
-import { getEntity, searchEntities, relatedEntities, confirmEntity, appendSupersede, appendRelate, confirmRelate, rejectRelate, isRelType, REL_VOCABULARY, type EntityRecord } from './graph';
+import { getEntity, searchEntities, relatedEntities, confirmEntity, appendSupersede, appendRelate, confirmRelate, rejectRelate, isRelType, appendEntity, REL_VOCABULARY, type EntityRecord } from './graph';
 import { listNotes, confirmNote } from './procedural';
 import { memoryContext } from './memory-context';
-import { compactGraph } from './graph-compact';
+import { compactGraph, graphEntitySources } from './graph-compact';
+import { passesConfidence, normalizeEntityType, scanForDuplicates } from './extraction';
+import { nowIso } from './time';
 import { readStatus, resolutionWorker, dedupWorker } from './maintainer';
 import { sendTelegramNotify } from './notify';
 import { runSurfacing } from './surfacing';
@@ -429,6 +431,26 @@ export function listMcpTools(): ToolDef[] {
       },
     },
     {
+      name: 'entity_ingest',
+      description:
+        'Write a durable-fact entity candidate from an email or external source. ' +
+        'Enforces the same confidence/type/dedup gates as the digest extraction. ' +
+        'Idempotent on `source` — a repeated call with the same source returns { skipped: true }. ' +
+        'Always writes confirmed:false. Returns the EntityRecord on success, or a typed { error } object.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          type:       { type: 'string', description: 'Entity type (Person, Project, Deadline, Preference, Fact). Case-insensitive — normalized internally.' },
+          label:      { type: 'string', description: 'Subject the entity names.' },
+          properties: { type: 'object', description: 'Free key-value. Include properties.date (YYYY-MM-DD) for Deadlines.' },
+          confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Must be >= 0.85 to pass the gate.' },
+          source:     { type: 'string', description: 'Provenance string, e.g. "gmail:<msg_id>". Drives idempotency — repeated calls with the same source are skipped.' },
+          reason:     { type: 'string', description: 'Optional human-readable provenance note, stored on properties for auditability.' },
+        },
+        required: ['type', 'label', 'confidence', 'source'],
+      },
+    },
+    {
       name: 'entity_relate',
       description:
         'Assert a directed relation between two entities. `rel` must be one of the 10 ' +
@@ -613,6 +635,7 @@ export async function callMcpTool(
     procedural_note_confirm: [{ name: 'id', type: 'integer' }],
     entity_confirm:          [{ name: 'id', type: 'string' }],
     entity_supersede:        [{ name: 'id', type: 'string' }, { name: 'superseded_by_id', type: 'string' }],
+    entity_ingest:           [{ name: 'type', type: 'string' }, { name: 'label', type: 'string' }],
     entity_relate:           [{ name: 'from', type: 'string' }, { name: 'rel', type: 'string' }, { name: 'to', type: 'string' }],
     entity_relate_confirm:   [{ name: 'from', type: 'string' }, { name: 'rel', type: 'string' }, { name: 'to', type: 'string' }],
     entity_relate_reject:    [{ name: 'from', type: 'string' }, { name: 'rel', type: 'string' }, { name: 'to', type: 'string' }],
@@ -796,6 +819,66 @@ export async function callMcpTool(
       if (getEntity(supersededById) === null) return text({ error: 'target_not_found', superseded_by_id: supersededById });
       appendSupersede(id, supersededById);
       return text({ ok: true, id, superseded_by_id: supersededById });
+    }
+
+    // ── Track-8 durable-fact ingestion (AC-12): never throws — typed { error | skipped } on
+    //    every sad path. Enforces the SAME gates as the digest extraction pass (shared helpers
+    //    from lib/extraction), so a gmail-sourced fact is admitted on identical terms.
+    case 'entity_ingest': {
+      // Step 1 already handled by ARG_SPECS: type + label are guaranteed non-empty strings here.
+
+      // Step 2 — normalize type BEFORE the idempotency check (reject a bad type without a file read).
+      const normType = normalizeEntityType(args.type);
+      if (normType === null) return text({ error: 'unknown_entity_type' });
+
+      // Step 3 — confidence gate (EC-5 boundary: >= 0.85 passes).
+      const confidence = args.confidence as number;
+      if (!passesConfidence(confidence)) return text({ error: 'confidence_below_threshold' });
+
+      // Step 4 — idempotency check: resolve graphPath, then check `source`.
+      // CRITICAL: use this EXACT expression (mirrors the graph_compact case) so the idempotency
+      // READ and the appendEntity WRITE resolve to the same file, and tests' MOT_GRAPH_PATH is honored.
+      const graphPath =
+        process.env.MOT_GRAPH_PATH ??
+        path.join(process.cwd(), 'ontology', 'graph.jsonl');
+      const source = args.source as string;
+      const sources = graphEntitySources(graphPath);
+      if (sources.has(source)) return text({ skipped: true, reason: 'source_already_ingested' });
+
+      // Step 5 — dedup scan (spread-merge, never bare assignment — a bare reassignment would
+      // clobber caller-supplied keys like properties.date on a Deadline).
+      const label = args.label as string;
+      let properties = (args.properties as Record<string, unknown> | undefined) ?? {};
+      const dupIds = scanForDuplicates(label, normType);
+      if (dupIds.length > 0) {
+        properties = { ...properties, probable_duplicate_of: dupIds };
+      }
+
+      // Step 6 — persist `reason` to properties when provided (auditability, W-4). DELIBERATE
+      // divergence from the digest path, which drops reason — do NOT match that precedent here.
+      const reason = typeof args.reason === 'string' ? args.reason : undefined;
+      if (reason !== undefined) {
+        properties = { ...properties, reason };
+      }
+
+      // Step 7 — append (confirmed:false ALWAYS; catch so an append throw becomes a typed error
+      // rather than propagating to the route as isError:true).
+      try {
+        const record = appendEntity({
+          type: normType,
+          label,
+          properties,
+          confidence,
+          source,
+          confirmed: false,
+          valid_from: nowIso(),
+          valid_until: null,
+          superseded_by: null,
+        });
+        return text(record);
+      } catch (e: unknown) {
+        return text({ error: 'append_failed', detail: String(e) });
+      }
     }
 
     // ── Track-6 edge tools (AC-12): never throw — typed { error } on every sad path. ──
