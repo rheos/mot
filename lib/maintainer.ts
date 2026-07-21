@@ -1,4 +1,4 @@
-// Track 9 — The Maintainer. The nightly memory-upkeep workers (Taylor's "Inside Out
+// Recallatron Maintainer. The nightly memory-upkeep workers (Taylor's "Inside Out
 // mind-workers"): they ORGANIZE and CONNECT memory but NEVER forget it. Every mutation is
 // additive/reversible; a Fact is never superseded, deleted, or rewritten by a worker.
 //
@@ -29,6 +29,7 @@ import {
   type RelatePatch,
 } from './graph';
 import type { BotRelationDraftItem } from './extraction';
+import type { ProfileStatus } from './profile';
 
 // ── The shared LLM helper ──────────────────────────────────────────────────────
 // Lifted verbatim from scripts/backfill-relations.ts's extractRelationDraft spawn+parse block so
@@ -88,7 +89,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 // ── Status file (Phase 4) ──────────────────────────────────────────────────────
-// The observable last-run summary for both workers. Written after every worker run (nightly
+// The observable last-run summary for maintainer workers. Written after every worker run (nightly
 // cron OR on-demand maintainer_run), read by the maintainer_status MCP tool. The file lives
 // beside graph.jsonl and is REGENERABLE (a stale/absent/corrupt file degrades to zero-state,
 // never throws — W4/AC-8) so it is NOT backup-worthy, unlike graph.jsonl.
@@ -96,12 +97,14 @@ function chunk<T>(items: T[], size: number): T[][] {
 export interface MaintainerStatus {
   resolution: ResolutionStatus | ZeroResolution;
   dedup: DedupStatus | ZeroDedup;
+  profile: ProfileStatus | ZeroProfile;
 }
 
 // The zero-state sub-objects have `last_run: null` (no pass has run yet); the live worker
 // statuses have `last_run: string`. A union keeps both assignable without a cast.
 type ZeroResolution = Omit<ResolutionStatus, 'last_run'> & { last_run: null };
 type ZeroDedup = Omit<DedupStatus, 'last_run'> & { last_run: null };
+type ZeroProfile = Omit<ProfileStatus, 'last_run'> & { last_run: null };
 
 // The all-nulls/zeros/false object returned when no pass has run yet (or the file is
 // unparseable). No entities_retyped field (B4 — single-entity retype deferred).
@@ -122,6 +125,16 @@ function zeroStatus(): MaintainerStatus {
       backup_path: null,
       batches_failed: 0,
       error: null,
+    },
+    profile: {
+      last_run: null,
+      ok: false,
+      input_entities: 0,
+      items_written: 0,
+      output_path: null,
+      batches_failed: 0,
+      error: null,
+      preview_markdown: null,
     },
   };
 }
@@ -167,6 +180,7 @@ export function readStatus(): MaintainerStatus {
     return {
       resolution: parsed.resolution ?? zero.resolution,
       dedup: parsed.dedup ?? zero.dedup,
+      profile: parsed.profile ?? zero.profile,
     };
   } catch {
     return zeroStatus(); // unparseable

@@ -42,7 +42,7 @@ vi.mock('../../lib/graph-compact', () => ({
   compactGraph: (p: string) => compactGraph(p),
 }));
 
-// Track 9 — mock the two maintainer workers so the nightly wiring is tested in isolation (no real
+// Track 9/10 — mock the maintainer workers so the nightly wiring is tested in isolation (no real
 // claude -p, no graph writes). Each is a vi.fn returning a valid worker-status object by default;
 // individual tests override with mockRejectedValueOnce to prove the per-step catch-isolation (AC-10).
 const resolutionWorker = vi.fn(async (_opts: { dryRun: boolean }) => ({
@@ -66,6 +66,20 @@ vi.mock('../../lib/maintainer', () => ({
   dedupWorker: (opts: { dryRun: boolean }) => dedupWorker(opts),
   readStatus: vi.fn(),
   writeStatus: vi.fn(),
+}));
+
+const profileWorker = vi.fn((_opts: { dryRun: boolean }) => ({
+  last_run: new Date().toISOString(),
+  ok: true,
+  input_entities: 0,
+  items_written: 0,
+  output_path: null,
+  batches_failed: 0,
+  error: null,
+  preview_markdown: null,
+}));
+vi.mock('../../lib/profile', () => ({
+  profileWorker: (opts: { dryRun: boolean }) => profileWorker(opts),
 }));
 
 // Track 7 — mock runSurfacing so the surfacing cron wiring is tested in isolation (no real scan,
@@ -122,6 +136,17 @@ beforeEach(() => {
     batches_failed: 0,
     error: null,
   }));
+  profileWorker.mockClear();
+  profileWorker.mockImplementation((_opts: { dryRun: boolean }) => ({
+    last_run: new Date().toISOString(),
+    ok: true,
+    input_entities: 0,
+    items_written: 0,
+    output_path: null,
+    batches_failed: 0,
+    error: null,
+    preview_markdown: null,
+  }));
   runSurfacing.mockClear();
   runSurfacing.mockImplementation(async () => ({
     scanned: 0,
@@ -133,6 +158,7 @@ beforeEach(() => {
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
+  delete process.env.MAINTAINER_PROFILE_DISABLE;
   delete process.env.SURFACING_ENABLE;
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -144,6 +170,7 @@ afterEach(() => {
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
+  delete process.env.MAINTAINER_PROFILE_DISABLE;
   delete process.env.SURFACING_ENABLE;
 });
 
@@ -223,7 +250,7 @@ describe('scheduleNightly — nightly maintenance (persistence: no disuse prune)
   });
 });
 
-describe('scheduleNightly — Track 9 Maintainer workers (isolation + disable switches)', () => {
+describe('scheduleNightly — Maintainer workers (isolation + disable switches)', () => {
   // All these tests use the absent-file path so compact takes its skip branch (no real graph
   // needed); the maintainer steps run regardless of graph size.
   beforeEach(() => {
@@ -238,6 +265,7 @@ describe('scheduleNightly — Track 9 Maintainer workers (isolation + disable sw
     // dedup still ran despite resolution throwing.
     expect(dedupWorker).toHaveBeenCalledTimes(1);
     expect(dedupWorker).toHaveBeenCalledWith({ dryRun: false });
+    expect(profileWorker).toHaveBeenCalledTimes(1);
     expect(
       errSpy.mock.calls.some((c) =>
         String(c[0]).includes('[MOT/nightly] resolution worker failed'),
@@ -251,8 +279,23 @@ describe('scheduleNightly — Track 9 Maintainer workers (isolation + disable sw
     await runNightly(); // completes without throwing
 
     expect(resolutionWorker).toHaveBeenCalledTimes(1);
+    expect(profileWorker).toHaveBeenCalledTimes(1);
     expect(
       errSpy.mock.calls.some((c) => String(c[0]).includes('[MOT/nightly] dedup worker failed')),
+    ).toBe(true);
+  });
+
+  it('AC-10/FR-12: profile worker failure is caught and logged, not rethrown', async () => {
+    profileWorker.mockImplementationOnce(() => {
+      throw new Error('profile boom');
+    });
+
+    await runNightly();
+
+    expect(resolutionWorker).toHaveBeenCalledTimes(1);
+    expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes('[MOT/nightly] profile worker failed')),
     ).toBe(true);
   });
 
@@ -264,6 +307,7 @@ describe('scheduleNightly — Track 9 Maintainer workers (isolation + disable sw
     expect(resolutionWorker).not.toHaveBeenCalled();
     // The dedup worker is unaffected — still runs.
     expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(profileWorker).toHaveBeenCalledTimes(1);
     expect(
       loggedLines().some((l) => l.includes('resolution worker disabled — skipping')),
     ).toBe(true);
@@ -277,14 +321,27 @@ describe('scheduleNightly — Track 9 Maintainer workers (isolation + disable sw
     expect(dedupWorker).not.toHaveBeenCalled();
     // The resolution worker is unaffected — still runs.
     expect(resolutionWorker).toHaveBeenCalledTimes(1);
+    expect(profileWorker).toHaveBeenCalledTimes(1);
     expect(loggedLines().some((l) => l.includes('dedup worker disabled — skipping'))).toBe(true);
   });
 
-  it('both workers run LIVE (dryRun:false) in the normal nightly path', async () => {
+  it('AC-7/FR-14: MAINTAINER_PROFILE_DISABLE=1 skips the profile worker (log line, no call)', async () => {
+    process.env.MAINTAINER_PROFILE_DISABLE = '1';
+
+    await runNightly();
+
+    expect(profileWorker).not.toHaveBeenCalled();
+    expect(resolutionWorker).toHaveBeenCalledTimes(1);
+    expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(loggedLines().some((l) => l.includes('profile worker disabled — skipping'))).toBe(true);
+  });
+
+  it('all workers run LIVE (dryRun:false) in the normal nightly path', async () => {
     await runNightly();
 
     expect(resolutionWorker).toHaveBeenCalledWith({ dryRun: false });
     expect(dedupWorker).toHaveBeenCalledWith({ dryRun: false });
+    expect(profileWorker).toHaveBeenCalledWith({ dryRun: false });
   });
 });
 

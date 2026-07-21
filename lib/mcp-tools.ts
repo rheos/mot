@@ -12,6 +12,7 @@ import { compactGraph, graphEntitySources } from './graph-compact';
 import { passesConfidence, normalizeEntityType, scanForDuplicates } from './extraction';
 import { nowIso } from './time';
 import { readStatus, resolutionWorker, dedupWorker } from './maintainer';
+import { memoryProfile, profileWorker } from './profile';
 import { sendTelegramNotify } from './notify';
 import { runSurfacing } from './surfacing';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
@@ -547,6 +548,22 @@ export function listMcpTools(): ToolDef[] {
       },
     },
     {
+      name: 'memory_profile',
+      description:
+        'Return Taylor\'s standing profile as markdown: pinned core plus the latest generated ' +
+        'current-context layer. section defaults to "full".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          section: {
+            type: 'string',
+            enum: ['full', 'core', 'synth'],
+            description: 'Which profile layer to return. Default: full.',
+          },
+        },
+      },
+    },
+    {
       name: 'graph_compact',
       description:
         'Admin tool: compact graph.jsonl by folding all patches and dropping superseded/pruned ' +
@@ -572,7 +589,7 @@ export function listMcpTools(): ToolDef[] {
     {
       name: 'maintainer_status',
       description:
-        'Return the last-run summary for the Track-9 Maintainer workers (resolution + dedup). ' +
+        'Return the last-run summary for the Maintainer workers (resolution + dedup + profile). ' +
         'Returns a zero-state object (null timestamps) if no pass has run yet.',
       inputSchema: { type: 'object', properties: {} },
     },
@@ -587,12 +604,27 @@ export function listMcpTools(): ToolDef[] {
         properties: {
           worker: {
             type: 'string',
-            enum: ['resolution', 'dedup', 'all'],
+            enum: ['resolution', 'dedup', 'profile', 'all'],
             description: 'Which worker to run. Default: all.',
           },
           dry_run: {
             type: 'boolean',
             description: 'Run LLM step but write nothing and take no backup. Default: false.',
+          },
+        },
+      },
+    },
+    {
+      name: 'profile_synthesize',
+      description:
+        'Trigger only the generated profile-layer worker now. dry_run:true runs synthesis and ' +
+        'returns a preview without writing profile files or status.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          dry_run: {
+            type: 'boolean',
+            description: 'Run synthesis but write nothing. Default: false.',
           },
         },
       },
@@ -927,6 +959,14 @@ export async function callMcpTool(
         typeof args.limit === 'number' ? args.limit : undefined,
       ));
 
+    case 'memory_profile': {
+      const section =
+        args.section === 'core' || args.section === 'synth' || args.section === 'full'
+          ? args.section
+          : 'full';
+      return text(memoryProfile(section));
+    }
+
     case 'graph_compact': {
       const graphPath =
         process.env.MOT_GRAPH_PATH ??
@@ -938,8 +978,8 @@ export async function callMcpTool(
     case 'topic_thread_summarize':
       return text(summarizeThread(args.slug as string));
 
-    // ── Track-9 Maintainer tools ──────────────────────────────────────────────
-    // Both return text({error}) on failure, NEVER throw — the Track-2/3/4 convention (the route
+    // ── Maintainer tools ─────────────────────────────────────────────────────
+    // These return text({error}) on failure, NEVER throw — the Track-2/3/4 convention (the route
     // surfaces a structured { error } with isError:false; callers branch on the field).
     case 'maintainer_status': {
       try {
@@ -962,7 +1002,19 @@ export async function callMcpTool(
         if (worker === 'dedup' || worker === 'all') {
           status.dedup = await dedupWorker({ dryRun });
         }
+        if (worker === 'profile' || worker === 'all') {
+          status.profile = profileWorker({ dryRun });
+        }
         return text(status);
+      } catch (e) {
+        return text({ error: String(e) });
+      }
+    }
+
+    case 'profile_synthesize': {
+      try {
+        const dryRun = (args.dry_run as boolean | undefined) ?? false;
+        return text(profileWorker({ dryRun }));
       } catch (e) {
         return text({ error: String(e) });
       }
