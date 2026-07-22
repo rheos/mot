@@ -61,9 +61,17 @@ const dedupWorker = vi.fn(async (_opts: { dryRun: boolean }) => ({
   batches_failed: 0,
   error: null,
 }));
+const autoconfirmWorker = vi.fn((_opts: { dryRun: boolean }) => ({
+  last_run: new Date().toISOString(),
+  ok: true,
+  candidates_scanned: 0,
+  entities_confirmed: 0,
+  error: null,
+}));
 vi.mock('../../lib/maintainer', () => ({
   resolutionWorker: (opts: { dryRun: boolean }) => resolutionWorker(opts),
   dedupWorker: (opts: { dryRun: boolean }) => dedupWorker(opts),
+  autoconfirmWorker: (opts: { dryRun: boolean }) => autoconfirmWorker(opts),
   readStatus: vi.fn(),
   writeStatus: vi.fn(),
 }));
@@ -136,6 +144,14 @@ beforeEach(() => {
     batches_failed: 0,
     error: null,
   }));
+  autoconfirmWorker.mockClear();
+  autoconfirmWorker.mockImplementation((_opts: { dryRun: boolean }) => ({
+    last_run: new Date().toISOString(),
+    ok: true,
+    candidates_scanned: 0,
+    entities_confirmed: 0,
+    error: null,
+  }));
   profileWorker.mockClear();
   profileWorker.mockImplementation((_opts: { dryRun: boolean }) => ({
     last_run: new Date().toISOString(),
@@ -158,6 +174,7 @@ beforeEach(() => {
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
+  delete process.env.MAINTAINER_AUTOCONFIRM_DISABLE;
   delete process.env.MAINTAINER_PROFILE_DISABLE;
   delete process.env.SURFACING_ENABLE;
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -170,6 +187,7 @@ afterEach(() => {
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
+  delete process.env.MAINTAINER_AUTOCONFIRM_DISABLE;
   delete process.env.MAINTAINER_PROFILE_DISABLE;
   delete process.env.SURFACING_ENABLE;
 });
@@ -285,6 +303,22 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
     ).toBe(true);
   });
 
+  it('AC-10/FR-12: autoconfirm worker failure is caught and logged; profile still runs', async () => {
+    autoconfirmWorker.mockImplementationOnce(() => {
+      throw new Error('autoconfirm boom');
+    });
+
+    await runNightly();
+
+    // The downstream profile worker is unaffected — the per-step catch isolates autoconfirm.
+    expect(profileWorker).toHaveBeenCalledTimes(1);
+    expect(
+      errSpy.mock.calls.some((c) =>
+        String(c[0]).includes('[MOT/nightly] autoconfirm worker failed'),
+      ),
+    ).toBe(true);
+  });
+
   it('AC-10/FR-12: profile worker failure is caught and logged, not rethrown', async () => {
     profileWorker.mockImplementationOnce(() => {
       throw new Error('profile boom');
@@ -294,6 +328,7 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
 
     expect(resolutionWorker).toHaveBeenCalledTimes(1);
     expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(autoconfirmWorker).toHaveBeenCalledTimes(1);
     expect(
       errSpy.mock.calls.some((c) => String(c[0]).includes('[MOT/nightly] profile worker failed')),
     ).toBe(true);
@@ -325,6 +360,20 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
     expect(loggedLines().some((l) => l.includes('dedup worker disabled — skipping'))).toBe(true);
   });
 
+  it('AC-7/FR-14: MAINTAINER_AUTOCONFIRM_DISABLE=1 skips the autoconfirm worker (log line, no call)', async () => {
+    process.env.MAINTAINER_AUTOCONFIRM_DISABLE = '1';
+
+    await runNightly();
+
+    expect(autoconfirmWorker).not.toHaveBeenCalled();
+    // The neighbours are unaffected — both still run.
+    expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(profileWorker).toHaveBeenCalledTimes(1);
+    expect(loggedLines().some((l) => l.includes('autoconfirm worker disabled — skipping'))).toBe(
+      true,
+    );
+  });
+
   it('AC-7/FR-14: MAINTAINER_PROFILE_DISABLE=1 skips the profile worker (log line, no call)', async () => {
     process.env.MAINTAINER_PROFILE_DISABLE = '1';
 
@@ -333,6 +382,7 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
     expect(profileWorker).not.toHaveBeenCalled();
     expect(resolutionWorker).toHaveBeenCalledTimes(1);
     expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(autoconfirmWorker).toHaveBeenCalledTimes(1);
     expect(loggedLines().some((l) => l.includes('profile worker disabled — skipping'))).toBe(true);
   });
 
@@ -341,6 +391,7 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
 
     expect(resolutionWorker).toHaveBeenCalledWith({ dryRun: false });
     expect(dedupWorker).toHaveBeenCalledWith({ dryRun: false });
+    expect(autoconfirmWorker).toHaveBeenCalledWith({ dryRun: false });
     expect(profileWorker).toHaveBeenCalledWith({ dryRun: false });
   });
 });

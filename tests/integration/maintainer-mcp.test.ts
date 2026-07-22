@@ -36,6 +36,13 @@ const dedupWorker = vi.fn(async (_opts: { dryRun: boolean }) => ({
   batches_failed: 0,
   error: null,
 }));
+const autoconfirmWorker = vi.fn((_opts: { dryRun: boolean }) => ({
+  last_run: new Date().toISOString(),
+  ok: true,
+  candidates_scanned: 5,
+  entities_confirmed: 3,
+  error: null,
+}));
 const profileWorker = vi.fn((_opts: { dryRun: boolean }) => ({
   last_run: new Date().toISOString(),
   ok: true,
@@ -52,6 +59,7 @@ vi.mock('../../lib/maintainer', async (importActual) => {
     ...actual,
     resolutionWorker: (opts: { dryRun: boolean }) => resolutionWorker(opts),
     dedupWorker: (opts: { dryRun: boolean }) => dedupWorker(opts),
+    autoconfirmWorker: (opts: { dryRun: boolean }) => autoconfirmWorker(opts),
   };
 });
 vi.mock('../../lib/profile', async (importActual) => {
@@ -75,6 +83,7 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<u
 beforeEach(() => {
   resolutionWorker.mockClear();
   dedupWorker.mockClear();
+  autoconfirmWorker.mockClear();
   profileWorker.mockClear();
   // Start each test with no status file (a fresh, never-run state).
   fs.rmSync(statusFile, { force: true });
@@ -90,16 +99,20 @@ describe('Track 9 — maintainer_status / readStatus (zero-state + corrupt-file 
     const res = (await call('maintainer_status')) as {
       resolution: { last_run: string | null; ok: boolean; named_nodes_minted: number };
       dedup: { last_run: string | null; ok: boolean; entities_merged: number };
+      autoconfirm: { last_run: string | null; ok: boolean; entities_confirmed: number };
       profile: { last_run: string | null; ok: boolean; items_written: number };
     };
     expect(res.resolution.last_run).toBeNull();
     expect(res.dedup.last_run).toBeNull();
+    expect(res.autoconfirm.last_run).toBeNull();
     expect(res.profile.last_run).toBeNull();
     expect(res.resolution.ok).toBe(false);
     expect(res.dedup.ok).toBe(false);
+    expect(res.autoconfirm.ok).toBe(false);
     expect(res.profile.ok).toBe(false);
     expect(res.resolution.named_nodes_minted).toBe(0);
     expect(res.dedup.entities_merged).toBe(0);
+    expect(res.autoconfirm.entities_confirmed).toBe(0);
     expect(res.profile.items_written).toBe(0);
   });
 
@@ -109,9 +122,11 @@ describe('Track 9 — maintainer_status / readStatus (zero-state + corrupt-file 
     const res = readStatus();
     expect(res.resolution.last_run).toBeNull();
     expect(res.dedup.last_run).toBeNull();
+    expect(res.autoconfirm.last_run).toBeNull();
     expect(res.profile.last_run).toBeNull();
     expect(res.resolution.named_nodes_minted).toBe(0);
     expect(res.dedup.entities_merged).toBe(0);
+    expect(res.autoconfirm.entities_confirmed).toBe(0);
     expect(res.profile.items_written).toBe(0);
   });
 });
@@ -121,14 +136,17 @@ describe('Track 9 — maintainer_run', () => {
     const res = (await call('maintainer_run', { worker: 'all', dry_run: true })) as {
       resolution: { named_nodes_minted: number };
       dedup: { entities_merged: number };
+      autoconfirm: { entities_confirmed: number };
       profile: { items_written: number };
     };
     expect(resolutionWorker).toHaveBeenCalledWith({ dryRun: true });
     expect(dedupWorker).toHaveBeenCalledWith({ dryRun: true });
+    expect(autoconfirmWorker).toHaveBeenCalledWith({ dryRun: true });
     expect(profileWorker).toHaveBeenCalledWith({ dryRun: true });
     // The returned payload carries every worker's summary.
     expect(res.resolution.named_nodes_minted).toBe(3);
     expect(res.dedup.entities_merged).toBe(2);
+    expect(res.autoconfirm.entities_confirmed).toBe(3);
     expect(res.profile.items_written).toBe(2);
   });
 
@@ -136,6 +154,7 @@ describe('Track 9 — maintainer_run', () => {
     await call('maintainer_run', { worker: 'resolution' });
     expect(resolutionWorker).toHaveBeenCalledTimes(1);
     expect(dedupWorker).not.toHaveBeenCalled();
+    expect(autoconfirmWorker).not.toHaveBeenCalled();
     expect(profileWorker).not.toHaveBeenCalled();
     // Default dry_run is false → live run.
     expect(resolutionWorker).toHaveBeenCalledWith({ dryRun: false });
@@ -145,6 +164,16 @@ describe('Track 9 — maintainer_run', () => {
     await call('maintainer_run', { worker: 'dedup' });
     expect(dedupWorker).toHaveBeenCalledTimes(1);
     expect(resolutionWorker).not.toHaveBeenCalled();
+    expect(autoconfirmWorker).not.toHaveBeenCalled();
+    expect(profileWorker).not.toHaveBeenCalled();
+  });
+
+  it('worker:"autoconfirm" runs only the autoconfirm worker', async () => {
+    await call('maintainer_run', { worker: 'autoconfirm' });
+    expect(autoconfirmWorker).toHaveBeenCalledTimes(1);
+    expect(autoconfirmWorker).toHaveBeenCalledWith({ dryRun: false });
+    expect(resolutionWorker).not.toHaveBeenCalled();
+    expect(dedupWorker).not.toHaveBeenCalled();
     expect(profileWorker).not.toHaveBeenCalled();
   });
 
@@ -154,12 +183,14 @@ describe('Track 9 — maintainer_run', () => {
     expect(profileWorker).toHaveBeenCalledWith({ dryRun: false });
     expect(resolutionWorker).not.toHaveBeenCalled();
     expect(dedupWorker).not.toHaveBeenCalled();
+    expect(autoconfirmWorker).not.toHaveBeenCalled();
   });
 
   it('defaults worker to "all" when omitted', async () => {
     await call('maintainer_run', {});
     expect(resolutionWorker).toHaveBeenCalledTimes(1);
     expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(autoconfirmWorker).toHaveBeenCalledTimes(1);
     expect(profileWorker).toHaveBeenCalledTimes(1);
   });
 });

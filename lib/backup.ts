@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { getDb } from '../db/client';
 import { compactGraph } from './graph-compact';
-import { resolutionWorker, dedupWorker } from './maintainer';
+import { resolutionWorker, dedupWorker, autoconfirmWorker } from './maintainer';
 import { profileWorker } from './profile';
 import { runSurfacing } from './surfacing';
 // NOTE: prunePendingProcedural / prunePendingEntities are intentionally NOT imported here anymore.
@@ -109,12 +109,12 @@ export function scheduleNightly(): void {
       console.error('[MOT/nightly] graph compact failed:', e);
     }
 
-    // ── Recallatron Maintainer — resolution + dedup + profile workers ────────────
+    // ── Recallatron Maintainer — resolution + dedup + autoconfirm + profile workers ──
     // All run LIVE (dryRun:false). Each in its OWN try/catch so one worker's failure never
     // blocks the other or the rest of the nightly job (FR-12/AC-10). The env short-circuits
     // (MAINTAINER_*_DISABLE='1') let Taylor turn a worker off without a deploy (FR-14/AC-7):
     // one log line, NO worker call, NO write. Sequence so far:
-    //   vacuumInto → backupGraph → [compact if ≥5MB] → resolution → dedup → profile.
+    //   vacuumInto → backupGraph → [compact if ≥5MB] → resolution → dedup → autoconfirm → profile.
     try {
       if (process.env.MAINTAINER_RESOLUTION_DISABLE === '1') {
         // eslint-disable-next-line no-console
@@ -137,6 +137,20 @@ export function scheduleNightly(): void {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT/nightly] dedup worker failed:', e);
+    }
+
+    // Auto-confirm runs AFTER dedup (never confirm an entity about to be merged away) and BEFORE
+    // profile (a promoted entity feeds the profile's confirmed-gated synthesis on the same pass).
+    try {
+      if (process.env.MAINTAINER_AUTOCONFIRM_DISABLE === '1') {
+        // eslint-disable-next-line no-console
+        console.log('[MOT/maintainer] autoconfirm worker disabled — skipping');
+      } else {
+        autoconfirmWorker({ dryRun: false });
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT/nightly] autoconfirm worker failed:', e);
     }
 
     try {

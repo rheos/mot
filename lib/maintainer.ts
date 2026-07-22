@@ -23,6 +23,7 @@ import {
   appendEntityRecord,
   appendResolvedRelate,
   appendSupersede,
+  confirmEntity,
   loadGraph,
   resolveEdge,
   type EntityRecord,
@@ -97,6 +98,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 export interface MaintainerStatus {
   resolution: ResolutionStatus | ZeroResolution;
   dedup: DedupStatus | ZeroDedup;
+  autoconfirm: AutoconfirmStatus | ZeroAutoconfirm;
   profile: ProfileStatus | ZeroProfile;
 }
 
@@ -104,6 +106,7 @@ export interface MaintainerStatus {
 // statuses have `last_run: string`. A union keeps both assignable without a cast.
 type ZeroResolution = Omit<ResolutionStatus, 'last_run'> & { last_run: null };
 type ZeroDedup = Omit<DedupStatus, 'last_run'> & { last_run: null };
+type ZeroAutoconfirm = Omit<AutoconfirmStatus, 'last_run'> & { last_run: null };
 type ZeroProfile = Omit<ProfileStatus, 'last_run'> & { last_run: null };
 
 // The all-nulls/zeros/false object returned when no pass has run yet (or the file is
@@ -124,6 +127,13 @@ function zeroStatus(): MaintainerStatus {
       entities_merged: 0,
       backup_path: null,
       batches_failed: 0,
+      error: null,
+    },
+    autoconfirm: {
+      last_run: null,
+      ok: false,
+      candidates_scanned: 0,
+      entities_confirmed: 0,
       error: null,
     },
     profile: {
@@ -180,6 +190,7 @@ export function readStatus(): MaintainerStatus {
     return {
       resolution: parsed.resolution ?? zero.resolution,
       dedup: parsed.dedup ?? zero.dedup,
+      autoconfirm: parsed.autoconfirm ?? zero.autoconfirm,
       profile: parsed.profile ?? zero.profile,
     };
   } catch {
@@ -848,6 +859,108 @@ function persistDedupStatus(status: DedupStatus, dryRun: boolean): void {
     writeStatus(current);
   } catch (e) {
     console.error('[MOT/maintainer] failed to write dedup status:', e);
+  }
+}
+
+// ── Worker 3: auto-confirm ─────────────────────────────────────────────────────
+// Promotes stable, high-confidence candidate entities to confirmed:true on the nightly pass, so
+// downstream consumers gated on `confirmed` (the profile layer especially) populate WITHOUT Taylor
+// doing a manual confirm chore. This is the AUTOMATED arm of confirmation: the machine does the
+// chore, so the system stays "ambient, not administered" (no user work required) while still
+// building a confirmed set. PURE CODE — no `claude -p`: the gate is deterministic, and the
+// RAM-constrained prod box already OOMs the LLM workers.
+//
+// A promoted confirm is a human-grade affirmation of `confirmed`, so keep the bar deliberately
+// stricter than extraction's 0.85: only promote what has PROVEN stable (aged, uncorrected). A wrong
+// auto-confirm is fixed by correction/supersede, never deletion — the persistence + correction
+// invariants (do-not-regress) still hold; confirmEntity() only appends an op:'confirm' patch.
+
+export interface AutoconfirmStatus {
+  last_run: string;
+  ok: boolean;
+  candidates_scanned: number; // entities that cleared the gate
+  entities_confirmed: number; // confirms actually appended (== scanned unless a write failed)
+  error: string | null;
+}
+
+// Env knob reader (read at CALL time so the bar is tunable on the box without a redeploy, and each
+// test can set it per-case). Guarded against NaN/negative → falls back. Floats allowed (confidence).
+function autoconfirmNum(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 0 ? v : fallback;
+}
+
+/**
+ * The auto-confirm worker. Scans the folded graph and confirms every UNCONFIRMED, LIVE entity that
+ * clears the promotion gate (all env-tunable, read here at call time):
+ *   - confidence ≥ MAINTAINER_AUTOCONFIRM_MIN_CONFIDENCE (default 0.9 — above extraction's 0.85)
+ *   - aged ≥ MAINTAINER_AUTOCONFIRM_MIN_AGE_DAYS since valid_from (default 7) — survived without
+ *     correction; a just-extracted fact is NOT promoted, leaving room for same-week correction
+ *   - superseded_by === null AND valid_until === null (live)
+ *   - NOT flagged properties.probable_duplicate_of (let the dedup worker resolve it first)
+ * dryRun scans + counts (entities_confirmed = would-confirm count) but appends nothing and writes
+ * no status. `now` is injectable for deterministic age-gate tests (defaults to wall-clock).
+ */
+export function autoconfirmWorker({
+  dryRun,
+  now = new Date(),
+}: {
+  dryRun: boolean;
+  now?: Date;
+}): AutoconfirmStatus {
+  const status: AutoconfirmStatus = {
+    last_run: now.toISOString(),
+    ok: true,
+    candidates_scanned: 0,
+    entities_confirmed: 0,
+    error: null,
+  };
+
+  try {
+    const minConfidence = autoconfirmNum('MAINTAINER_AUTOCONFIRM_MIN_CONFIDENCE', 0.9);
+    const minAgeMs = autoconfirmNum('MAINTAINER_AUTOCONFIRM_MIN_AGE_DAYS', 7) * 86_400_000;
+    const nowMs = now.getTime();
+
+    const eligible = loadGraph().filter((e) => {
+      if (e.confirmed === true) return false;
+      if (e.superseded_by !== null || e.valid_until !== null) return false;
+      if (e.confidence < minConfidence) return false;
+      if (Array.isArray(e.properties?.probable_duplicate_of)) return false;
+      const validFromMs = Date.parse(e.valid_from);
+      if (!Number.isFinite(validFromMs)) return false;
+      return nowMs - validFromMs >= minAgeMs;
+    });
+
+    status.candidates_scanned = eligible.length;
+
+    if (dryRun) {
+      status.entities_confirmed = eligible.length; // would-confirm count
+    } else {
+      for (const e of eligible) {
+        const res = confirmEntity(e.id);
+        // confirmEntity is idempotent + typed-result; count only successful confirms.
+        if (!('error' in res)) status.entities_confirmed++;
+      }
+    }
+  } catch (e) {
+    status.ok = false;
+    status.error = String(e);
+  }
+
+  persistAutoconfirmStatus(status, dryRun);
+  return status;
+}
+
+// Persist only the `autoconfirm` sub-object, folding it over what the earlier workers wrote
+// (read-modify-write). Skipped in dry-run. Never throws.
+function persistAutoconfirmStatus(status: AutoconfirmStatus, dryRun: boolean): void {
+  if (dryRun) return;
+  try {
+    const current = readStatus();
+    current.autoconfirm = status;
+    writeStatus(current);
+  } catch (e) {
+    console.error('[MOT/maintainer] failed to write autoconfirm status:', e);
   }
 }
 

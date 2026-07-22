@@ -11,7 +11,7 @@ import { memoryContext } from './memory-context';
 import { compactGraph, graphEntitySources } from './graph-compact';
 import { passesConfidence, normalizeEntityType, scanForDuplicates } from './extraction';
 import { nowIso } from './time';
-import { readStatus, resolutionWorker, dedupWorker } from './maintainer';
+import { readStatus, resolutionWorker, dedupWorker, autoconfirmWorker } from './maintainer';
 import { memoryProfile, profileWorker } from './profile';
 import { sendTelegramNotify } from './notify';
 import { runSurfacing } from './surfacing';
@@ -589,8 +589,8 @@ export function listMcpTools(): ToolDef[] {
     {
       name: 'maintainer_status',
       description:
-        'Return the last-run summary for the Maintainer workers (resolution + dedup + profile). ' +
-        'Returns a zero-state object (null timestamps) if no pass has run yet.',
+        'Return the last-run summary for the Maintainer workers (resolution + dedup + autoconfirm ' +
+        '+ profile). Returns a zero-state object (null timestamps) if no pass has run yet.',
       inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -604,7 +604,7 @@ export function listMcpTools(): ToolDef[] {
         properties: {
           worker: {
             type: 'string',
-            enum: ['resolution', 'dedup', 'profile', 'all'],
+            enum: ['resolution', 'dedup', 'autoconfirm', 'profile', 'all'],
             description: 'Which worker to run. Default: all.',
           },
           dry_run: {
@@ -1001,6 +1001,9 @@ export async function callMcpTool(
         }
         if (worker === 'dedup' || worker === 'all') {
           status.dedup = await dedupWorker({ dryRun });
+        }
+        if (worker === 'autoconfirm' || worker === 'all') {
+          status.autoconfirm = autoconfirmWorker({ dryRun });
         }
         if (worker === 'profile' || worker === 'all') {
           status.profile = profileWorker({ dryRun });
