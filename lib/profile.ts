@@ -205,6 +205,37 @@ function validateSynthItems(raw: unknown, allowedIds: Set<string>): ProfileItem[
   return out;
 }
 
+// Split an array into consecutive chunks of at most `size` (size is guaranteed ≥1 by the caller).
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+// How many entities go into a SINGLE synthesis prompt. A single all-entities send errors `claude -p`
+// on the RAM-constrained prod box at scale (exit 1 at ~104 entities), so the worker batches — the
+// same lesson MAINTAINER_BATCH_SIZE encodes for the resolution/dedup workers. Read at call time,
+// guarded against 0/NaN/negative → falls back to 25.
+function profileBatchSize(): number {
+  const v = Number(process.env.MOT_PROFILE_BATCH_SIZE);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 25;
+}
+
+// Merge items aggregated ACROSS batches: dedup by section:text and cap at `max` total. Each batch is
+// already capped at 25 by validateSynthItems, so the union needs one final dedup + cap.
+function mergeItems(items: ProfileItem[], max = 25): ProfileItem[] {
+  const seen = new Set<string>();
+  const out: ProfileItem[] = [];
+  for (const item of items) {
+    const key = `${item.section}:${item.text.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 export function renderSynthDoc(doc: ProfileSynthDoc): string {
   const parts: string[] = [];
   for (const section of PROFILE_SECTIONS) {
@@ -306,21 +337,41 @@ export function profileWorker({
     const entities = profileSourceEntities();
     status.input_entities = entities.length;
     const allowedIds = new Set(entities.map((e) => e.id));
-    let items: ProfileItem[] = [];
 
-    if (entities.length > 0) {
-      const raw = synthesize(
-        PROFILE_SYNTHESIS_PROMPT + '\n\nENTITIES:\n' + JSON.stringify(entities),
-      );
-      items = validateSynthItems(raw, allowedIds);
+    // BATCHED synthesis (mirrors resolution/dedup): the prompt payload is the full entity JSON, and a
+    // single all-entities send errors `claude -p` on the prod box at scale (exit 1 at ~104 entities).
+    // Split into chunks of MOT_PROFILE_BATCH_SIZE and synthesize each SEQUENTIALLY; a failing batch
+    // logs, bumps batches_failed, and is skipped — the rest still contribute (EC-3 parity).
+    const collected: ProfileItem[] = [];
+    let batchesSucceeded = 0;
+    for (const batch of chunk(entities, profileBatchSize())) {
+      try {
+        const raw = synthesize(
+          PROFILE_SYNTHESIS_PROMPT + '\n\nENTITIES:\n' + JSON.stringify(batch),
+        );
+        collected.push(...validateSynthItems(raw, allowedIds));
+        batchesSucceeded += 1;
+      } catch (err) {
+        console.error('[MOT/maintainer] profile batch failed:', err);
+        status.batches_failed += 1;
+        status.ok = false;
+        status.error = String(err);
+      }
     }
 
+    const items = mergeItems(collected, 25);
     const doc: ProfileSynthDoc = { generated_at: status.last_run, items };
     const markdown = renderSynthDoc(doc);
     status.items_written = items.length;
     status.preview_markdown = dryRun ? markdown : null;
 
-    if (!dryRun) {
+    // Only persist when synthesis produced a TRUSTWORTHY result: at least one batch succeeded, or
+    // there were genuinely no eligible entities. If every batch FAILED (entities present but zero
+    // succeeded), write NOTHING — a transient `claude -p` outage must not overwrite a previously-good
+    // generated layer with an empty doc (the degrade contract: keep the last good profile / seed).
+    const synthesisUsable = entities.length === 0 || batchesSucceeded > 0;
+
+    if (!dryRun && synthesisUsable) {
       const paths = profilePaths();
       const hasLiveSynth = fs.existsSync(paths.synthJson) || fs.existsSync(paths.synthMarkdown);
       if (entities.length > 0 || hasLiveSynth) {

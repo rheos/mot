@@ -28,6 +28,7 @@ function resetFiles(): void {
   fs.rmSync(synthJson, { force: true });
   fs.rmSync(synthMd, { force: true });
   fs.rmSync(path.join(tmpDir, 'maintainer-status.json'), { force: true });
+  delete process.env.MOT_PROFILE_BATCH_SIZE;
 }
 
 function seedEntity(opts: {
@@ -58,6 +59,7 @@ afterAll(() => {
   delete process.env.MOT_PROFILE_CORE_PATH;
   delete process.env.MOT_PROFILE_SYNTH_JSON_PATH;
   delete process.env.MOT_PROFILE_SYNTH_MD_PATH;
+  delete process.env.MOT_PROFILE_BATCH_SIZE;
 });
 
 describe('profileWorker', () => {
@@ -139,6 +141,69 @@ describe('profileWorker', () => {
     expect(status.preview_markdown).toContain('Rheo and M.O.T.');
     expect(fs.existsSync(synthJson)).toBe(false);
     expect(readStatus().profile.last_run).toBeNull();
+  });
+
+  it('batches large inputs: synthesize is called once per chunk and items merge across batches', () => {
+    process.env.MOT_PROFILE_BATCH_SIZE = '1';
+    const a = seedEntity({ label: 'SampleApp', properties: { status: 'active' } });
+    const b = seedEntity({ label: 'GrowOperative', properties: { status: 'active' } });
+    const c = seedEntity({ label: 'Rheo', properties: { status: 'active' } });
+
+    // One item per single-entity batch; each cites the id it was handed.
+    const synthesize = vi.fn().mockImplementation((prompt: string) => {
+      const id = [a.id, b.id, c.id].find((x) => prompt.includes(x))!;
+      return { items: [{ section: 'work', text: `Project ${id} is active.`, source_entity_ids: [id] }] };
+    });
+
+    const status = profileWorker({ dryRun: false, synthesize });
+    delete process.env.MOT_PROFILE_BATCH_SIZE;
+
+    expect(synthesize).toHaveBeenCalledTimes(3); // 3 entities / batch size 1
+    expect(status.ok).toBe(true);
+    expect(status.batches_failed).toBe(0);
+    expect(status.items_written).toBe(3); // one item from each batch, merged
+  });
+
+  it('a failing batch is isolated: batches_failed increments, surviving batches still write', () => {
+    process.env.MOT_PROFILE_BATCH_SIZE = '1';
+    const a = seedEntity({ label: 'SampleApp' });
+    const b = seedEntity({ label: 'GrowOperative' });
+
+    const synthesize = vi.fn().mockImplementation((prompt: string) => {
+      if (prompt.includes(a.id)) throw new Error('claude -p exited 1');
+      return { items: [{ section: 'work', text: 'GrowOperative is active.', source_entity_ids: [b.id] }] };
+    });
+
+    const status = profileWorker({ dryRun: false, synthesize });
+    delete process.env.MOT_PROFILE_BATCH_SIZE;
+
+    expect(status.batches_failed).toBe(1);
+    expect(status.ok).toBe(false);
+    expect(status.items_written).toBe(1); // the surviving batch's item was still written
+    expect(memoryProfile('synth').profile).toContain('GrowOperative is active');
+  });
+
+  it('total synthesis failure preserves the previously-good layer (never overwrites with empty)', () => {
+    // Seed a good live synth file first.
+    fs.writeFileSync(
+      synthJson,
+      JSON.stringify({
+        generated_at: '2026-07-20T00:00:00.000Z',
+        items: [{ section: 'work', text: 'Prior good item.', source_entity_ids: ['e1'] }],
+      }),
+    );
+    seedEntity({ label: 'SampleApp' });
+
+    const synthesize = vi.fn().mockImplementation(() => {
+      throw new Error('claude -p exited 1');
+    });
+
+    const status = profileWorker({ dryRun: false, synthesize });
+
+    expect(status.ok).toBe(false);
+    expect(status.batches_failed).toBe(1);
+    // The prior good layer is intact — NOT clobbered with an empty doc.
+    expect(memoryProfile('synth').profile).toContain('Prior good item');
   });
 
   it('with no eligible entities, preserves the seed fallback until a live synth exists', () => {
