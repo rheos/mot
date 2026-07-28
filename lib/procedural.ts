@@ -1,6 +1,6 @@
 // Recallatron Phase 3 — procedural notes (FR 1–5, FR 12–15, EC-8, AC-8, AC-14, OQ-5).
 //
-// Append-only "how Taylor works" notes with a supersede chain (superseded_by self-FK), mirroring
+// Append-only operator workflow notes with a supersede chain (superseded_by self-FK), mirroring
 // memory_items. A candidate is always inserted unconfirmed (confirmed = 0); confirmation is a
 // separate, explicit step. note_norm is the normalized form used for dedup/lookup. All queries
 // use the synchronous better-sqlite3 API; every error return is a typed object, never a throw.

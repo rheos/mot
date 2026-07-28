@@ -4,8 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { apiPath } from '../lib/client/base-path';
 
-// Inline comment entry on the ticket detail view (FR-UI-4). Author is always `robin` (the sole
-// human operator; `tuttle` is the system author for dedup/cascade comments). A non-empty body is
+// Inline comment entry on the ticket detail view (FR-UI-4). Author is the sole
+// human operator; `tuttle` is the system author for dedup/cascade comments. A non-empty body is
 // required before any request goes out — the empty case is rejected client-side. On success the
 // box clears and router.refresh() re-runs the Server Component, so the new comment appears in the
 // chronological list with no full page reload.

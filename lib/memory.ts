@@ -1,7 +1,7 @@
 // Track 1 limitation: conflict detection uses normalized label match only
 // (label_norm = lower(trim(label))). No semantic/token similarity.
 // Two facts about the same entity with different label wording (e.g. "Alex" vs
-// "Alex Goodwin") are stored as independent facts. Track 2 concern.
+// "Alex Rivera") are stored as independent facts. Track 2 concern.
 
 import { getDb } from '../db/client';
 import { nowIso } from './time';

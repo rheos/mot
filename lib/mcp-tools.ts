@@ -62,9 +62,9 @@ export function listMcpTools(): ToolDef[] {
             type: 'array',
             items: { type: 'string', enum: MINISTRY_ENUM },
             description:
-              'Filter by ministry. education=school/Alex, commerce=SampleApp/Upwork/income, ' +
+              'Filter by ministry. education=learning/school, commerce=customers/income, ' +
               'plenty=bills/renewals, flow=dev/deploys, works=tasks, peace=health/personal, ' +
-              'interior=legal/gov, foreign_affairs=community.',
+              'interior=legal/admin, foreign_affairs=community.',
           },
           severity: {
             type: 'array',
@@ -109,9 +109,9 @@ export function listMcpTools(): ToolDef[] {
             type: 'string',
             enum: MINISTRY_ENUM,
             description:
-              'Life domain. education=school/Alex, commerce=SampleApp/Upwork/income, ' +
+              'Life domain. education=learning/school, commerce=customers/income, ' +
               'plenty=bills/renewals, flow=dev/deploys, works=tasks, peace=health/personal, ' +
-              'interior=legal/gov, foreign_affairs=community.',
+              'interior=legal/admin, foreign_affairs=community.',
           },
           severity: { type: 'string', enum: SEVERITY_ENUM },
           ticket_type: {
@@ -284,7 +284,7 @@ export function listMcpTools(): ToolDef[] {
       name: 'write_memory',
       description:
         'Write a durable fact, preference, deadline, or person record to memory. ' +
-        'Call at the END of your reply, after answering Taylor. ' +
+        'Call at the END of your reply, after answering the user. ' +
         'chat_id is NOT an input — it is derived server-side from source_turn_id.',
       inputSchema: {
         type: 'object',
@@ -522,7 +522,7 @@ export function listMcpTools(): ToolDef[] {
     },
     {
       name: 'notify_robin',
-      description: 'Send a text message to Taylor\'s Telegram chat. Truncates to 4096 chars. ' +
+      description: 'Send a text message to the configured Telegram chat. Truncates to 4096 chars. ' +
         'Retries up to 3 times on network error or non-2xx. Returns ok or an error string.',
       inputSchema: {
         type: 'object',
@@ -550,7 +550,7 @@ export function listMcpTools(): ToolDef[] {
     {
       name: 'memory_profile',
       description:
-        'Return Taylor\'s standing profile as markdown: pinned core plus the latest generated ' +
+        'Return the configured standing profile as markdown: pinned core plus the latest generated ' +
         'current-context layer. section defaults to "full".',
       inputSchema: {
         type: 'object',

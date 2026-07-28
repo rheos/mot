@@ -8,7 +8,7 @@ import { profileWorker } from './profile';
 import { runSurfacing } from './surfacing';
 // NOTE: prunePendingProcedural / prunePendingEntities are intentionally NOT imported here anymore.
 // The nightly job no longer disuse-prunes memories — persistence is a hard product requirement
-// (a fact Taylor stated once must survive indefinitely, even if never referenced again). The prune
+// (a fact the user stated once must survive indefinitely, even if never referenced again). The prune
 // functions still exist in ./procedural and ./graph-compact for explicit, non-disuse cleanup, but
 // they are not wired into the cron. See memory: memory-system-ambient-not-administered.
 
@@ -112,7 +112,7 @@ export function scheduleNightly(): void {
     // ── Recallatron Maintainer — resolution + dedup + autoconfirm + profile workers ──
     // All run LIVE (dryRun:false). Each in its OWN try/catch so one worker's failure never
     // blocks the other or the rest of the nightly job (FR-12/AC-10). The env short-circuits
-    // (MAINTAINER_*_DISABLE='1') let Taylor turn a worker off without a deploy (FR-14/AC-7):
+    // (MAINTAINER_*_DISABLE='1') let the operator turn a worker off without a deploy (FR-14/AC-7):
     // one log line, NO worker call, NO write. Sequence so far:
     //   vacuumInto → backupGraph → [compact if ≥5MB] → resolution → dedup → autoconfirm → profile.
     try {

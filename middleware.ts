@@ -27,10 +27,10 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     // Middleware redirects MUST emit an ABSOLUTE URL: Next.js runs a middleware response's Location
     // through `new URL(...)`, which THROWS on a relative path (ERR_INVALID_URL) — so a path-only
     // Location 500s every gated page in the Edge runtime. Build the origin from the EXTERNAL host
-    // (the Host / x-forwarded-host header Apache preserves as example.com via ProxyPreserveHost), NOT
+    // (the Host / x-forwarded-host header a reverse proxy preserves), NOT
     // from req.nextUrl — behind the proxy nextUrl carries the INTERNAL origin (localhost:3100), a
     // dead host. withBasePath already yields '/mot/login' in prod ('/login' at root); `new URL(path,
-    // absoluteOrigin)` does NOT re-add basePath, so the result is exactly https://example.com/mot/login.
+    // absoluteOrigin)` does NOT re-add basePath, so the result is the external login URL.
     const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? req.nextUrl.host;
     const proto = req.headers.get('x-forwarded-proto') ?? req.nextUrl.protocol.replace(/:$/, '') ?? 'https';
     const loginUrl = new URL(withBasePath('/login'), `${proto}://${host}`);

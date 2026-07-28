@@ -254,7 +254,7 @@ export async function requireSession(req: Request): Promise<string | null> {
 
 // The private gate the data layer (P6) consumes: true ⇒ authenticated ⇒ includePrivate.
 // Both a valid session cookie AND a valid API key grant full visibility — this is a
-// single-user system and the API key only goes to Taylor/Rheo, so no access distinction applies.
+// single-user system and the API key only goes to trusted automations, so no access distinction applies.
 export async function isSessionRequest(req: Request): Promise<boolean> {
   if ((await requireSession(req)) !== null) return true;
   return apiKeyGuard(req);

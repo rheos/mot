@@ -12,7 +12,7 @@ import { apiPath } from '../lib/client/base-path';
 // tickets; dedup_key stays null). Client-side validation gates the request: an empty title or body
 // is rejected inline before any fetch (AC-CREATE negative case — no new DB row). A 422 from the
 // server surfaces its fields[] inline on the matching inputs; a network/server error shows a
-// banner above the form and keeps every field populated so Taylor can retry without re-typing. On
+// banner above the form and keeps every field populated so the operator can retry without re-typing. On
 // 201 we redirect to the new ticket's detail view.
 
 const TICKET_TYPE_SUGGESTIONS = ['ad-hoc', 'flow-block', 'interior-note', 'general'];

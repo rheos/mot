@@ -64,13 +64,13 @@ export interface BotDigestPayload {
 // 0.8499 fails) and the procedural dedup path (two notes with the same text).
 export const TEST_DIGEST_FIXTURE: BotDigestPayload = {
   entity_draft: [
-    { type: 'Person', label: 'Alex Goodwin', properties: { grade: 'Year 4' }, confidence: 0.9, reason: 'Explicitly stated' },
+    { type: 'Person', label: 'Alex Rivera', properties: { grade: 'Year 4' }, confidence: 0.9, reason: 'Explicitly stated' },
     { type: 'Project', label: 'SampleApp', properties: { status: 'active' }, confidence: 0.85, reason: 'Stated in session' },
-    { type: 'Fact', label: 'Taylor prefers bullet replies maybe', properties: {}, confidence: 0.8499, reason: 'Inferred from tone' },
+    { type: 'Fact', label: 'The user prefers bullet replies maybe', properties: {}, confidence: 0.8499, reason: 'Inferred from tone' },
   ],
   procedural_raw: [
-    { category: 'communication', note: 'Taylor prefers bullet replies for ticket lists', confidence: 0.9 },
-    { category: 'workflow', note: 'Taylor prefers bullet replies for ticket lists', confidence: 0.8 }, // duplicate
+    { category: 'communication', note: 'The user prefers bullet replies for ticket lists', confidence: 0.9 },
+    { category: 'workflow', note: 'The user prefers bullet replies for ticket lists', confidence: 0.8 }, // duplicate
   ],
   relation_draft: null,
 };
@@ -82,16 +82,16 @@ You are extracting structured facts from a conversation session transcript.
 
 RULES:
 - Emit ONLY things that were EXPLICITLY STATED in the transcript.
-- Do NOT infer, speculate, or extrapolate. If Taylor did not say it directly, do not emit it.
-- Do NOT emit things implied by Taylor's behavior or tone.
+- Do NOT infer, speculate, or extrapolate. If the user did not say it directly, do not emit it.
+- Do NOT emit things implied by the user's behavior or tone.
 - Confidence must reflect how clearly and directly the fact was stated — not how plausible it seems.
 
 NEGATIVE EXAMPLE (do NOT do this):
-  BAD: { "label": "Taylor prefers short replies", "confidence": 0.7, "reason": "Taylor seems to prefer X based on implied behavior" }
+  BAD: { "label": "The user prefers short replies", "confidence": 0.7, "reason": "The user seems to prefer X based on implied behavior" }
   This is inference from tone, not an explicit statement. Do not emit it.
 
 POSITIVE EXAMPLE:
-  GOOD: { "label": "Alex is in Year 4", "confidence": 0.95, "reason": "Taylor said 'Alex is in year 4' at turn 3" }
+  GOOD: { "label": "Alex is in Year 4", "confidence": 0.95, "reason": "The user said 'Alex is in year 4' at turn 3" }
   This is a direct statement with a specific source.
 
 Output format: JSON object with three arrays:
@@ -101,7 +101,7 @@ Output format: JSON object with three arrays:
 
 RELATIONS (relation_draft):
 - Emit ONLY relations that were EXPLICITLY STATED. Do NOT infer a relation from co-mention,
-  conversational tone, or implied context. If Taylor did not directly state that A is related
+  conversational tone, or implied context. If the user did not directly state that A is related
   to B, do not emit the edge.
 - Confidence reflects how DIRECTLY the relation was stated, not how plausible it seems.
 - rel MUST be one of the 10 closed-vocabulary verbs below. Each verb has a FIXED
@@ -111,9 +111,9 @@ RELATIONS (relation_draft):
     deadline_for  deadline → the thing it is for (enrollment-form-due, deadline_for, Lincoln Elementary)
     prefers       person → preference           (Taylor, prefers, bullet-replies)
     attends       person → institution          (Alex, attends, Lincoln Elementary)
-    belongs_to    asset → account/grouping      (sampleapp.com, belongs_to, growoperative-account)
+    belongs_to    asset → account/grouping      (sampleapp.com, belongs_to, hosting-account)
     owns          agent → asset                 (Taylor, owns, sampleapp.com)
-    hosted_on     app/site/service → host/box   (SampleApp, hosted_on, smallhost-sampleapp)
+    hosted_on     app/site/service → host/box   (SampleApp, hosted_on, app-host)
     points_to     domain/subdomain → target     (example.com, points_to, mot)
     depends_on    service → service             (umami, depends_on, supabase-postgres)
 - Three-way boundary (these do NOT overlap; owns and belongs_to may coexist on the same node):
@@ -122,7 +122,7 @@ RELATIONS (relation_draft):
     works_on   = labour      (agent → project)
 - Populate from_type and to_type on EVERY relation item — infra edges especially. The 5 entity
   types do not grow, so map each infra node class to the right existing type:
-    apps / sites / services / code repos (things Taylor builds, runs, works on, or owns as a
+    apps / sites / services / code repos (things the user builds, runs, works on, or owns as a
       first-class project)                                          → 'Project'
     hosts / boxes / domains / subdomains / accounts / groupings
       (passive infrastructure other things sit on or point at)      → 'Fact'
@@ -132,7 +132,7 @@ DEADLINE ENTITIES (type: 'Deadline'):
 - When you emit a Deadline entity, you MUST populate properties.date with the deadline's
   calendar date as an ISO string "YYYY-MM-DD" (e.g. { "date": "2026-09-15" }).
 - This is the ONLY key the surfacing scan reads. A Deadline with no properties.date, or a
-  non-ISO value, will never surface a reminder. If Taylor did not state a concrete date, do
+  non-ISO value, will never surface a reminder. If the user did not state a concrete date, do
   not invent one — omit the Deadline or emit it without a date.
 `.trim();
 
@@ -287,7 +287,7 @@ function processProcedural(digestRow: DigestRow): void {
 //
 // RESOLVE-OR-CREATE (the FR-6 fix). The old implementation resolved each endpoint via matchByLabel
 // and DROPPED the edge when an endpoint matched zero or multiple nodes. Because the graph is
-// fact-SENTENCES ("Taylor has a Claude instance…") rather than named nodes, "Taylor" matched many
+// fact-SENTENCES ("Taylor has an assistant instance...") rather than named nodes, "Taylor" matched many
 // sentences by prefix and came back ambiguous — so every live edge was dropped (the 0-edge bug).
 // The fix reuses linkRelationDraft from scripts/backfill-relations.ts with create:true: an endpoint
 // that doesn't EXACT-match an existing node is MINTED as a canonical named node (confirmed:false,
@@ -296,7 +296,7 @@ function processProcedural(digestRow: DigestRow): void {
 // fallback was the original ambiguity that caused the 0-edge bug); linkRelationDraft's resolveOrCreate
 // enforces this, so we do NOT reintroduce matchByLabel here.
 //
-// OQ-5 known gap: if Taylor states a correction in conversation (e.g. "it's Alex not Maya"),
+// OQ-5 known gap: if the user states a correction in conversation (e.g. "it's Alex not Maya"),
 // the live path may mint a "corrected" duplicate node. The nightly dedup worker (Track 9 Phase 3)
 // merges it next cycle. No special-casing in v1.
 function processRelations(digestRow: DigestRow): void {

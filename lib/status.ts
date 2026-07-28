@@ -27,7 +27,7 @@ export interface AuditQualityByVersion {
 }
 
 // AC-11. This is an OBSERVED CORRECTION RATE, not an accuracy metric — a correction signal is
-// a row whose corrected_* was back-filled when Taylor re-assigned a ticket (FR-API-2b). A true
+// a row whose corrected_* was back-filled when the operator re-assigned a ticket (FR-API-2b). A true
 // accuracy figure would need a confirmed-correct workflow that does not exist.
 export interface AuditQualityPayload {
   total_audited: number;
@@ -113,7 +113,7 @@ export function buildStatus(): StatusPayload {
     }
 
     // Audit quality signal — AC-11. Groups by model_version + prompt_hash (null = unhashed).
-    // correction_signal = row has any corrected_* set (a Taylor re-assign back-filled it).
+    // correction_signal = row has any corrected_* set (an operator re-assign back-filled it).
     const auditRows = db
       .prepare(
         `SELECT

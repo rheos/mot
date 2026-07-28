@@ -5,7 +5,7 @@
 //      preference→Preference). Un-normalised casings fragment the graph and break matchByLabel.
 //   2. DEDUP — merge entities that share the same (normalised type, exact label). The duplicates'
 //      properties are UNIONED into the surviving canonical record (no information is dropped), and
-//      the duplicates are removed. This collapses e.g. 4× "Alex" Person nodes into one, so a
+//      the duplicates are removed. This collapses e.g. 4x "Alex" Person nodes into one, so a
 //      relation to "Alex" resolves instead of being skipped as ambiguous.
 //
 // This is an atomic graph REWRITE (same class of operation as compaction). It BACKS UP graph.jsonl

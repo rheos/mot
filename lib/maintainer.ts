@@ -1,5 +1,5 @@
-// Recallatron Maintainer. The nightly memory-upkeep workers (Taylor's "Inside Out
-// mind-workers"): they ORGANIZE and CONNECT memory but NEVER forget it. Every mutation is
+// Recallatron Maintainer. The nightly memory-upkeep workers organize and connect memory but
+// never forget it. Every mutation is
 // additive/reversible; a Fact is never superseded, deleted, or rewritten by a worker.
 //
 // The hard invariant (spec § "The LLM-identify / deterministic-execute boundary"): the LLM
@@ -262,7 +262,7 @@ RULES:
   or extrapolate a subject that is not described by the entities you were given.
 - canonical_label is the clean canonical name of the thing (e.g. "Taylor", "SampleApp"), not a sentence.
 - canonical_type is the entity type of the canonical named node: a person → "Person"; an app / site /
-  service / code repo Taylor builds, runs, or owns → "Project"; hosts / boxes / domains / accounts and
+  service / code repo the user builds, runs, or owns → "Project"; hosts / boxes / domains / accounts and
   other passive infrastructure → "Fact"; schedule items → "Deadline"; stated preferences → "Preference".
 - existing_representative_id: if the input ALREADY contains a canonical named node for this thing — an
   entity whose type is canonical_type and whose label EXACTLY matches canonical_label — return its id.
@@ -864,7 +864,7 @@ function persistDedupStatus(status: DedupStatus, dryRun: boolean): void {
 
 // ── Worker 3: auto-confirm ─────────────────────────────────────────────────────
 // Promotes stable, high-confidence candidate entities to confirmed:true on the nightly pass, so
-// downstream consumers gated on `confirmed` (the profile layer especially) populate WITHOUT Taylor
+// downstream consumers gated on `confirmed` (the profile layer especially) populate WITHOUT the user
 // doing a manual confirm chore. This is the AUTOMATED arm of confirmation: the machine does the
 // chore, so the system stays "ambient, not administered" (no user work required) while still
 // building a confirmed set. PURE CODE — no `claude -p`: the gate is deterministic, and the

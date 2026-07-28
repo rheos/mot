@@ -10,8 +10,8 @@
 // WHY THIS REPLACED THE FIRST VERSION (which wrote 0 edges): the live path (lib/extraction
 // processRelations) resolves each endpoint against EXISTING entities via matchByLabel and SKIPS the
 // relation if the endpoint doesn't resolve to exactly one node. But the entity graph is
-// fact-SENTENCES ("Taylor has a Claude instance…"), not named nodes — there is no "Taylor" node — so
-// "Taylor" matched 24 sentences by prefix, came back ambiguous, and every relation was dropped.
+// fact-SENTENCES ("Taylor has an assistant instance..."), not named nodes — there is no "Taylor"
+// node — so "Taylor" matched many sentences by prefix, came back ambiguous, and every relation was dropped.
 //
 // The fix: a relation IMPLIES its endpoints. "(Taylor, owns, SampleApp)" is itself evidence that a
 // "Taylor" Person and a "SampleApp" Project exist. So instead of resolve-or-skip we do
@@ -158,7 +158,7 @@ export interface LinkResult {
 //
 // Endpoint resolution is EXACT-label only (case-insensitive, trimmed), preferring same-type then
 // widening to any-type. It deliberately does NOT do matchByLabel's prefix/suffix fallback — that
-// fuzzy fallback is exactly what made "Taylor" ambiguous against 24 fact-sentences. Exact-or-create
+// fuzzy fallback is exactly what made "Taylor" ambiguous against many fact-sentences. Exact-or-create
 // sidesteps the ambiguity entirely.
 export function linkRelationDraft(
   relationDraftJson: string,

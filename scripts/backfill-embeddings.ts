@@ -48,7 +48,7 @@ export function parseArgs(argv: string[]): BackfillEmbeddingsArgs {
 
 // Bounded-concurrency runner (inline — no third-party dep). A fixed pool of `limit` workers
 // pulls from a shared queue, so at most `limit` embed() calls are ever in flight. This is the
-// guardrail that keeps the backfill from saturating the SmallHost 1–2 vCPU while the app is
+// guardrail that keeps the backfill from saturating a small production host while the app is
 // live (EC 10 / FR 15) — never an unbounded Promise.all over every row.
 export async function runWithConcurrency<T>(
   items: T[],

@@ -1,11 +1,8 @@
 // mot/config/ministry-adapters.ts
 //
 // The machine-validated adapter config. Closed-set facts (ministries, ticket types,
-// classifierInput modes) live here; vendor-specific routing detail lives in
-// mot/skills/mot-intake/references/triage-rules.md.
-// SYNC NOTE: keep this file in sync with triage-rules.md — when you add or rename a
-// sourceId, ticketType, or classifierInput here, update the ownership boundary note
-// there too (R-P2-4). Both files must reference each other explicitly.
+// classifierInput modes) live here. Deployment-specific routing detail should live in
+// ignored local/private operator notes, not in the public repository.
 
 import type { Ministry, Severity } from '../lib/enums';
 
@@ -40,7 +37,7 @@ export const MINISTRY_ADAPTERS: MinistrySourceAdapter[] = [
     ],
     classifierInput: 'minimal',
     // expectedFrequency intentionally omitted during the calibration period (R-P2-3):
-    // the first adapter runs without a baseline for ~14 days before Taylor sets one.
+    // the first adapter runs without a baseline until the operator sets one.
     // Silent-feed detection is built and tested (EC-2) but the production trigger waits.
   },
 ];

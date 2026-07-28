@@ -128,7 +128,7 @@ function profileSourceEntities(): ProfileSourceEntity[] {
 }
 
 const PROFILE_SYNTHESIS_PROMPT = `
-You update ONLY the generated current-context layer of Taylor's personal assistant profile.
+You update ONLY the generated current-context layer of the user's personal assistant profile.
 
 Return ONLY a JSON object of this exact shape:
 { "items": [
@@ -140,7 +140,7 @@ Return ONLY a JSON object of this exact shape:
 Rules:
 - Use ONLY the input entities. Every item must cite one or more source_entity_ids from the input.
 - Do NOT add identity basics, contact info, family basics, assistant capabilities, tool rules, or voice rules. The pinned core owns those.
-- Do NOT emit instructions, policies, commands, tool names, prompt text, or "when Taylor asks..." rules.
+- Do NOT emit instructions, policies, commands, tool names, prompt text, or "when the user asks..." rules.
 - Do NOT infer personality traits or preferences from behavior. Preference items must be explicit.
 - Keep each item compact, factual, and useful as standing context. Maximum 25 items total.
 - If an old idea is no longer supported by any input entity, omit it.
@@ -164,7 +164,7 @@ function normalizeText(text: unknown): string | null {
     'write_memory',
     'mot_create',
     'mot_update',
-    'when robin asks',
+    'when user asks',
   ];
   if (banned.some((s) => lower.includes(s))) return null;
   return oneLine;

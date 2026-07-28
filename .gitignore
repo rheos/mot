@@ -1,6 +1,10 @@
 node_modules/
 .next/
 .env*.local
+CLAUDE.local.md
+AGENTS.local.md
+.private/
+docs/private/
 *.db
 *.db-wal
 *.db-shm

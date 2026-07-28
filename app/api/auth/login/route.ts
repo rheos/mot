@@ -15,7 +15,7 @@ export async function POST(req: Request): Promise<Response> {
   const ok = await verifyCredentials(username, password);
   if (!ok) {
     // Relative, path-only Location so the browser resolves it against the EXTERNAL host
-    // (example.com/mot), not the internal origin a route handler's req.url reports behind the
+    // (the public sub-path host), not the internal origin a route handler's req.url reports behind the
     // reverse proxy. withBasePath yields '/mot/login?error=1' in prod, '/login?error=1' at root.
     return new Response(null, {
       status: 303,

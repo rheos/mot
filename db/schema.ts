@@ -173,7 +173,7 @@ export const topicThreadSession = sqliteTable(
   }),
 );
 
-// procedural_notes — append-only how-Taylor-works notes with a supersede chain (like
+// procedural_notes — append-only operator workflow notes with a supersede chain (like
 // memory_items). note_norm is the normalized form for dedup/lookup. source_session_id
 // references session_digest(session_id) (the UNIQUE column), not its PK.
 export const proceduralNotes = sqliteTable(

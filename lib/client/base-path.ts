@@ -1,7 +1,7 @@
 // Sub-path awareness for raw URL strings. Next auto-prefixes <Link>, useRouter().push(), and the
 // route handlers themselves with basePath — but a raw fetch('/api/...'), a <form action="/api/...">,
 // or a server-side Response.redirect('/path') is NOT prefixed, so under NEXT_PUBLIC_BASE_PATH=/mot
-// (the example.com/mot reverse-proxy deploy) those would hit the un-prefixed path and 404 behind the
+// (a reverse-proxy sub-path deploy) those would hit the un-prefixed path and 404 behind the
 // proxy. These helpers prepend the base path so the SAME build works at root (no env var → no-op)
 // or under a sub-path.
 //

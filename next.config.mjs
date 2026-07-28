@@ -10,8 +10,8 @@ const NODE_BUILTINS = new Set([
 ]);
 
 // Sub-path deploy support. With NO env var (local dev, tests, CI) the app runs at root exactly
-// as before; with NEXT_PUBLIC_BASE_PATH=/mot (production, behind the Apache reverse proxy at
-// example.com/mot) every route, asset, and route handler serves under /mot. Nothing is hardcoded —
+// as before; with NEXT_PUBLIC_BASE_PATH=/mot (production, behind a reverse proxy) every route,
+// asset, and route handler serves under /mot. Nothing is hardcoded —
 // the same build runs at root or under a sub-path purely from this one env var.
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
