@@ -12,6 +12,7 @@ import {
 } from '../../../lib/validation';
 import { createTicket, listTickets, type ListOpts } from '../../../lib/tickets';
 import { Ministry, Status, Severity } from '../../../lib/enums';
+import { sendTelegramNotify } from '../../../lib/notify';
 
 // ── POST /api/tickets · GET /api/tickets (FR-API-1, FR-API-3) ─────────────────
 // Thin handlers: guard → validate → call lib/* → shape the response. No business logic here —
@@ -42,6 +43,25 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const result = createTicket(parsed.data);
     const status = result.action === 'created' ? 201 : 200;
+
+    // Critical alert (best-effort): DM Robin when a CRITICAL ticket is newly
+    // CREATED — not on a dedup-update, so a recurring critical condition pings
+    // once (on first occurrence), never every write. Fire-and-forget: a Telegram
+    // failure must NEVER fail the ticket write. Safe here because MOT runs as a
+    // long-lived container (next start), so the floating promise completes after
+    // the response is sent.
+    if (result.action === 'created' && result.ticket?.severity === Severity.critical) {
+      const t = result.ticket;
+      const base = (process.env.MOT_BASE_URL ?? 'https://rheo.ca/mot').replace(/\/+$/, '');
+      const text =
+        `[CRITICAL] ${t.title}\n\n${t.body ?? ''}\n\n` +
+        `${t.ministry} · ${t.ticket_type}\n${base}/tickets/${t.id}`;
+      void sendTelegramNotify(text).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[MOT] critical-ticket Telegram failed:', err);
+      });
+    }
+
     return Response.json(
       { id: result.id, action: result.action, ticket: result.ticket },
       { status },
