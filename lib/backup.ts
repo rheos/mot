@@ -6,6 +6,7 @@ import { compactGraph } from './graph-compact';
 import { resolutionWorker, dedupWorker, autoconfirmWorker } from './maintainer';
 import { profileWorker } from './profile';
 import { runSurfacing } from './surfacing';
+import { reportWorkerHealth } from './maintainer-health';
 // NOTE: prunePendingProcedural / prunePendingEntities are intentionally NOT imported here anymore.
 // The nightly job no longer disuse-prunes memories — persistence is a hard product requirement
 // (a fact the user stated once must survive indefinitely, even if never referenced again). The prune
@@ -115,16 +116,24 @@ export function scheduleNightly(): void {
     // (MAINTAINER_*_DISABLE='1') let the operator turn a worker off without a deploy (FR-14/AC-7):
     // one log line, NO worker call, NO write. Sequence so far:
     //   vacuumInto → backupGraph → [compact if ≥5MB] → resolution → dedup → autoconfirm → profile.
+    // Each worker's return status is pushed through reportWorkerHealth (lib/maintainer-health.ts):
+    // ok:false files/updates a critical M.O.T. ticket (Telegram page on first failure, silent
+    // dedup-update on repeat), ok:true closes a previously-open alert. A worker that THROWS outright
+    // (rather than catching its own per-batch failures) is reported the same way from the outer
+    // catch — either path must never surface without paging, the way the raw claude-CLI outage did
+    // silently for three weeks (2026-08-13 → 2026-09-11).
     try {
       if (process.env.MAINTAINER_RESOLUTION_DISABLE === '1') {
         // eslint-disable-next-line no-console
         console.log('[MOT/maintainer] resolution worker disabled — skipping');
       } else {
-        await resolutionWorker({ dryRun: false });
+        const status = await resolutionWorker({ dryRun: false });
+        reportWorkerHealth('resolution', status);
       }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT/nightly] resolution worker failed:', e);
+      reportWorkerHealth('resolution', { ok: false, error: String(e) });
     }
 
     try {
@@ -132,11 +141,13 @@ export function scheduleNightly(): void {
         // eslint-disable-next-line no-console
         console.log('[MOT/maintainer] dedup worker disabled — skipping');
       } else {
-        await dedupWorker({ dryRun: false });
+        const status = await dedupWorker({ dryRun: false });
+        reportWorkerHealth('dedup', status);
       }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT/nightly] dedup worker failed:', e);
+      reportWorkerHealth('dedup', { ok: false, error: String(e) });
     }
 
     // Auto-confirm runs AFTER dedup (never confirm an entity about to be merged away) and BEFORE
@@ -146,11 +157,13 @@ export function scheduleNightly(): void {
         // eslint-disable-next-line no-console
         console.log('[MOT/maintainer] autoconfirm worker disabled — skipping');
       } else {
-        autoconfirmWorker({ dryRun: false });
+        const status = autoconfirmWorker({ dryRun: false });
+        reportWorkerHealth('autoconfirm', status);
       }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT/nightly] autoconfirm worker failed:', e);
+      reportWorkerHealth('autoconfirm', { ok: false, error: String(e) });
     }
 
     try {
@@ -158,11 +171,13 @@ export function scheduleNightly(): void {
         // eslint-disable-next-line no-console
         console.log('[MOT/maintainer] profile worker disabled — skipping');
       } else {
-        profileWorker({ dryRun: false });
+        const status = profileWorker({ dryRun: false });
+        reportWorkerHealth('profile', status);
       }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT/nightly] profile worker failed:', e);
+      reportWorkerHealth('profile', { ok: false, error: String(e) });
     }
   });
 

@@ -412,6 +412,23 @@ export function listTickets(opts: ListOpts): ListResult {
   };
 }
 
+// Find the most recent NOT-done ticket for a given source_ref + ticket_type (the same dedup
+// identity createTicket resolves on). Used by internal alerting (lib/maintainer-health.ts) to
+// decide whether a recovered worker should close an existing alert ticket rather than leave it
+// open. Bypasses the private gate — this is server-internal, not a route handler — and there is
+// at most one non-done ticket per (source_ref, ticket_type) by construction (createTicket always
+// updates/reopens the existing row instead of inserting a second one).
+export function findOpenTicketBySourceRef(sourceRef: string, ticketType: string): Ticket | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT * FROM ticket WHERE source_ref = ? AND ticket_type = ? AND status != 'done'
+         ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(sourceRef, ticketType) as Record<string, unknown> | undefined;
+  return row ? rowToTicket(row) : null;
+}
+
 // ── getTicket (FR-API-4) ──────────────────────────────────────────────────────
 // Returns the ticket + its full comment history. Private gate: a private ticket without a
 // session returns null → the route handler responds 404 (NOT 403 — do not confirm existence).

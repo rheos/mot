@@ -47,11 +47,11 @@ vi.mock('../../lib/graph-compact', () => ({
 // individual tests override with mockRejectedValueOnce to prove the per-step catch-isolation (AC-10).
 const resolutionWorker = vi.fn(async (_opts: { dryRun: boolean }) => ({
   last_run: new Date().toISOString(),
-  ok: true,
+  ok: true as boolean,
   named_nodes_minted: 0,
   edges_linked: 0,
   batches_failed: 0,
-  error: null,
+  error: null as string | null,
 }));
 const dedupWorker = vi.fn(async (_opts: { dryRun: boolean }) => ({
   last_run: new Date().toISOString(),
@@ -88,6 +88,15 @@ const profileWorker = vi.fn((_opts: { dryRun: boolean }) => ({
 }));
 vi.mock('../../lib/profile', () => ({
   profileWorker: (opts: { dryRun: boolean }) => profileWorker(opts),
+}));
+
+// The nightly failure-monitoring push (lib/maintainer-health.ts) — mocked so this file tests only
+// the WIRING (each worker's returned status is forwarded, a thrown error is also reported) without
+// touching a real ticket DB; lib/maintainer-health.test.ts covers the ticket create/dedup/close
+// behavior itself against a real temp DB.
+const reportWorkerHealth = vi.fn();
+vi.mock('../../lib/maintainer-health', () => ({
+  reportWorkerHealth: (worker: string, status: unknown) => reportWorkerHealth(worker, status),
 }));
 
 // Track 7 — mock runSurfacing so the surfacing cron wiring is tested in isolation (no real scan,
@@ -171,6 +180,7 @@ beforeEach(() => {
     skipped: 0,
     disabled: false,
   }));
+  reportWorkerHealth.mockClear();
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
@@ -289,6 +299,12 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
         String(c[0]).includes('[MOT/nightly] resolution worker failed'),
       ),
     ).toBe(true);
+    // The thrown error is still pushed through the health monitor — a worker that crashes outright
+    // must page just as loudly as one that returns ok:false from its own per-batch catch.
+    expect(reportWorkerHealth).toHaveBeenCalledWith('resolution', {
+      ok: false,
+      error: expect.stringContaining('resolution boom'),
+    });
   });
 
   it('AC-10/FR-12: dedup worker failure is caught and logged, not rethrown', async () => {
@@ -301,6 +317,10 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
     expect(
       errSpy.mock.calls.some((c) => String(c[0]).includes('[MOT/nightly] dedup worker failed')),
     ).toBe(true);
+    expect(reportWorkerHealth).toHaveBeenCalledWith('dedup', {
+      ok: false,
+      error: expect.stringContaining('dedup boom'),
+    });
   });
 
   it('AC-10/FR-12: autoconfirm worker failure is caught and logged; profile still runs', async () => {
@@ -317,6 +337,10 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
         String(c[0]).includes('[MOT/nightly] autoconfirm worker failed'),
       ),
     ).toBe(true);
+    expect(reportWorkerHealth).toHaveBeenCalledWith('autoconfirm', {
+      ok: false,
+      error: expect.stringContaining('autoconfirm boom'),
+    });
   });
 
   it('AC-10/FR-12: profile worker failure is caught and logged, not rethrown', async () => {
@@ -332,6 +356,10 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
     expect(
       errSpy.mock.calls.some((c) => String(c[0]).includes('[MOT/nightly] profile worker failed')),
     ).toBe(true);
+    expect(reportWorkerHealth).toHaveBeenCalledWith('profile', {
+      ok: false,
+      error: expect.stringContaining('profile boom'),
+    });
   });
 
   it('AC-7/FR-14: MAINTAINER_RESOLUTION_DISABLE=1 skips the resolution worker (log line, no call)', async () => {
@@ -346,6 +374,8 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
     expect(
       loggedLines().some((l) => l.includes('resolution worker disabled — skipping')),
     ).toBe(true);
+    // A disabled worker never ran, so there is nothing to report — no phantom health call.
+    expect(reportWorkerHealth).not.toHaveBeenCalledWith('resolution', expect.anything());
   });
 
   it('AC-7/FR-14: MAINTAINER_DEDUP_DISABLE=1 skips the dedup worker (log line, no call)', async () => {
@@ -393,6 +423,48 @@ describe('scheduleNightly — Maintainer workers (isolation + disable switches)'
     expect(dedupWorker).toHaveBeenCalledWith({ dryRun: false });
     expect(autoconfirmWorker).toHaveBeenCalledWith({ dryRun: false });
     expect(profileWorker).toHaveBeenCalledWith({ dryRun: false });
+  });
+});
+
+describe('scheduleNightly — health monitoring (lib/maintainer-health.ts wiring)', () => {
+  beforeEach(() => {
+    process.env.MOT_GRAPH_PATH = '/nonexistent/mot-nightly-health/graph.jsonl';
+  });
+
+  it('forwards each worker\'s own returned status to reportWorkerHealth', async () => {
+    await runNightly();
+
+    expect(reportWorkerHealth).toHaveBeenCalledWith(
+      'resolution',
+      expect.objectContaining({ ok: true }),
+    );
+    expect(reportWorkerHealth).toHaveBeenCalledWith('dedup', expect.objectContaining({ ok: true }));
+    expect(reportWorkerHealth).toHaveBeenCalledWith(
+      'autoconfirm',
+      expect.objectContaining({ ok: true }),
+    );
+    expect(reportWorkerHealth).toHaveBeenCalledWith(
+      'profile',
+      expect.objectContaining({ ok: true }),
+    );
+  });
+
+  it('a worker returning ok:false (its own per-batch catch, not a throw) is still forwarded', async () => {
+    resolutionWorker.mockImplementationOnce(async () => ({
+      last_run: new Date().toISOString(),
+      ok: false,
+      named_nodes_minted: 0,
+      edges_linked: 0,
+      batches_failed: 52,
+      error: 'claude -p exited null: ',
+    }));
+
+    await runNightly();
+
+    expect(reportWorkerHealth).toHaveBeenCalledWith(
+      'resolution',
+      expect.objectContaining({ ok: false, batches_failed: 52 }),
+    );
   });
 });
 

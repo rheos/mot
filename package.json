@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.269",
     "@node-rs/argon2": "^2.0.2",
     "@paralleldrive/cuid2": "^3.3.0",
     "better-sqlite3": "^11.10.0",

@@ -15,7 +15,6 @@
 // subject that clears the type-specific mint threshold, and links the descriptive Fact entities to
 // it with candidate `points_to` edges — reusing linkRelationDraft's ONE resolve-or-create impl.
 
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { linkRelationDraft, type LinkResult } from '../scripts/backfill-relations';
@@ -31,40 +30,18 @@ import {
 } from './graph';
 import type { BotRelationDraftItem } from './extraction';
 import type { ProfileStatus } from './profile';
+import { identifyViaProvider } from './llm-provider';
 
 // ── The shared LLM helper ──────────────────────────────────────────────────────
-// Lifted verbatim from scripts/backfill-relations.ts's extractRelationDraft spawn+parse block so
-// there is EXACTLY ONE copy of the `claude -p` + balanced-brace JSON-extraction logic in the repo
-// (backfill-relations.ts's extractRelationDraft now CALLS this instead of duplicating it). It does
-// NOT build a prompt — the caller owns the prompt; this just runs it and returns the first balanced
-// JSON object, or null when the output has no `{`. A non-zero exit throws (the caller's per-batch
-// try/catch turns that into batches_failed — EC-3).
+// Delegates to the provider seam (lib/llm-provider.ts — novadiem-engineering standard 14): the
+// caller owns the prompt, this runs it via whichever backend MAINTAINER_LLM_PROVIDER selects
+// (headless `claude -p` by default, OpenRouter as the swap-in) and returns the first balanced JSON
+// object, or null when the output has no `{`. A non-zero exit throws (the caller's per-batch
+// try/catch turns that into batches_failed — EC-3). Kept as `identifyViaClaude` — the name every
+// call site (this file, lib/profile.ts, scripts/backfill-relations.ts) already imports as the
+// default `identify`/`synthesize` param — so swapping providers is zero call-site changes.
 export function identifyViaClaude(prompt: string): unknown {
-  const res = spawnSync(
-    'claude',
-    ['-p', prompt, '--model', 'claude-sonnet-4-6', '--allowedTools', ''],
-    { encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
-  );
-  if (res.status !== 0) {
-    throw new Error(`claude -p exited ${res.status}: ${(res.stderr || '').slice(0, 300)}`);
-  }
-  const raw = (res.stdout || '').trim();
-  const clean = raw.replace(/^```json\s*|^```\s*|\s*```$/gm, '').trim();
-  const start = clean.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0;
-  let end = start;
-  for (let i = start; i < clean.length; i++) {
-    if (clean[i] === '{') depth++;
-    else if (clean[i] === '}') {
-      depth--;
-      if (depth === 0) {
-        end = i + 1;
-        break;
-      }
-    }
-  }
-  return JSON.parse(clean.slice(start, end));
+  return identifyViaProvider(prompt);
 }
 
 // ── Batch size (scale fix) ──────────────────────────────────────────────────────
