@@ -80,7 +80,7 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 function identifyViaOpenRouter(prompt: string): unknown {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('MAINTAINER_LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set');
-  const model = process.env.MAINTAINER_OPENROUTER_MODEL || 'anthropic/claude-3.5-haiku';
+  const model = process.env.MAINTAINER_OPENROUTER_MODEL || 'anthropic/claude-haiku-4.5';
 
   const body = JSON.stringify({
     model,

@@ -99,7 +99,7 @@ describe('identifyViaProvider — openrouter backend', () => {
     expect(args).toContain('https://openrouter.ai/api/v1/chat/completions');
     expect(args).toContain('Authorization: Bearer test-key');
     const body = JSON.parse(opts.input);
-    expect(body.model).toBe('anthropic/claude-3.5-haiku');
+    expect(body.model).toBe('anthropic/claude-haiku-4.5');
     expect(body.messages).toEqual([{ role: 'user', content: 'PROMPT TEXT' }]);
   });
 
