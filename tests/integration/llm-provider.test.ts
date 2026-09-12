@@ -70,6 +70,22 @@ describe('identifyViaProvider — claude-cli backend (default)', () => {
 
     expect(() => identifyViaProvider('x')).toThrow(/claude -p exited null/);
   });
+
+  it('falls back to stdout when stderr is empty (the CLI\'s "session limit" message ships on stdout, not stderr)', () => {
+    spawnSyncMock.mockReturnValue({
+      status: 1,
+      stdout: "You've hit your session limit · resets 10:40am (UTC)",
+      stderr: '',
+    });
+
+    expect(() => identifyViaProvider('x')).toThrow(/session limit/);
+  });
+
+  it('prefers stderr over stdout when both are present', () => {
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: 'stdout noise', stderr: 'real error' });
+
+    expect(() => identifyViaProvider('x')).toThrow(/claude -p exited 1: real error/);
+  });
 });
 
 describe('identifyViaProvider — openrouter backend', () => {

@@ -70,7 +70,12 @@ function identifyViaClaudeCli(prompt: string): unknown {
     { encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
   );
   if (res.status !== 0) {
-    throw new Error(`claude -p exited ${res.status}: ${(res.stderr || '').slice(0, 300)}`);
+    // The CLI's user-facing error text (e.g. "You've hit your session limit · resets ...") comes
+    // through stdout, not stderr — a stderr-only message swallowed exactly that diagnosis during
+    // the 2026-09-12 verification, showing an empty error for a real, explainable failure. Prefer
+    // stderr when present (still the right place for a crash/stack trace), fall back to stdout.
+    const detail = (res.stderr || res.stdout || '').slice(0, 300);
+    throw new Error(`claude -p exited ${res.status}: ${detail}`);
   }
   return extractBalancedJson(res.stdout || '');
 }
