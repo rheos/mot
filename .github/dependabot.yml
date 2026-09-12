@@ -1,0 +1,15 @@
+# Weekly dependency updates, grouped so a routine week is one PR rather than
+# one per package. Major bumps stay ungrouped on purpose: those are the ones
+# that deserve to be read individually.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    groups:
+      javascript-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
