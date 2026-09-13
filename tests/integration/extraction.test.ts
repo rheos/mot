@@ -95,7 +95,7 @@ describe('Recallatron Phase 4 — extraction pass (lib/extraction)', () => {
     expect(graphLineCount()).toBe(2);
 
     const labels = entities.map((e) => e.label).sort();
-    expect(labels).toEqual(['Alex Goodwin', 'SampleApp']);
+    expect(labels).toEqual(['Alex Rivera', 'SampleApp']);
     expect(entities.map((e) => e.label)).not.toContain('Taylor prefers bullet replies maybe');
 
     // AC-7 — every extraction-pass entity is unconfirmed, sourced to the session.
@@ -113,7 +113,7 @@ describe('Recallatron Phase 4 — extraction pass (lib/extraction)', () => {
       .all(SESSION_ID) as { confirmed: number; note_norm: string }[];
     expect(notes).toHaveLength(1);
     expect(notes[0].confirmed).toBe(0);
-    expect(notes[0].note_norm).toBe('robin prefers bullet replies for ticket lists');
+    expect(notes[0].note_norm).toBe('the user prefers bullet replies for ticket lists');
   });
 
   it('parse_error=1 is a no-op — no entities, no notes written', async () => {
