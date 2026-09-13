@@ -1,0 +1,44 @@
+# Type check, tests and build on every PR, so a dependency bump has a real
+# signal instead of only a bot's opinion.
+#
+# `npm run lint` is deliberately absent: ESLint was never configured in this
+# repo, so `next lint` drops into an interactive setup prompt and would hang.
+# Add the step once an eslint config exists.
+#
+# `npm run test:e2e` is also absent: Playwright needs browsers installed.
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install (clean)
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
