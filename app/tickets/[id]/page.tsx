@@ -28,8 +28,8 @@ import { CopyButton } from '../../../components/CopyButton';
 // components. A missing ticket (or DB error) renders a real empty/error state, never a blank
 // screen (house rule 6).
 //
-// Next 14 passes `params` as a plain (sync) prop; the read is synchronous, so the page is a sync
-// Server Component like the triage page.
+// Next 15 passes `params` as a Promise, so the page awaits it and is an async Server
+// Component. The ticket read itself is still synchronous.
 
 export const dynamic = 'force-dynamic';
 
@@ -52,11 +52,12 @@ const MinistryIcons: Record<string, LucideIcon> = {
   Globe,
 };
 
-export default function TicketDetailPage({
-  params,
-}: {
-  params: { id: string };
-}): React.JSX.Element {
+export default async function TicketDetailPage(
+  props: {
+    params: Promise<{ id: string }>;
+  }
+): Promise<React.JSX.Element> {
+  const params = await props.params;
   let ticket: TicketWithComments | null = null;
   let nextTicketId: string | undefined;
   let error = false;

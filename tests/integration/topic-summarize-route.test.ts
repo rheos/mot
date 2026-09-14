@@ -63,7 +63,7 @@ afterAll(() => {
 
 function getSummarize(opts: { slug?: string; cookie?: string; bearer?: boolean } = {}): {
   req: Request;
-  ctx: { params: { slug: string } };
+  ctx: { params: Promise<{ slug: string }> };
 } {
   const slug = opts.slug ?? THREAD_SLUG;
   const headers: Record<string, string> = {};
@@ -71,7 +71,7 @@ function getSummarize(opts: { slug?: string; cookie?: string; bearer?: boolean }
   if (opts.bearer) headers.Authorization = authHeader.Authorization;
   return {
     req: new Request(`http://localhost/api/memory/topics/${slug}/summarize`, { headers }),
-    ctx: { params: { slug } },
+    ctx: { params: Promise.resolve({ slug }) },
   };
 }
 

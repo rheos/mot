@@ -20,14 +20,12 @@ import { getTicket, patchTicket, TicketError } from '../../../../lib/tickets';
 // illegal transition or a 404, and we map TicketError.status straight onto the response.
 
 interface RouteContext {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // GET /api/tickets/:id — one ticket plus its comment history (FR-API-4).
-export async function GET(
-  req: Request,
-  { params }: RouteContext,
-): Promise<Response> {
+export async function GET(req: Request, props: RouteContext): Promise<Response> {
+  const params = await props.params;
   const hasKey = await apiKeyGuard(req);
   const hasSession = await isSessionRequest(req);
   if (!hasKey && !hasSession) return unauthorized();
@@ -49,10 +47,8 @@ export async function GET(
 // session cookie (the UI) — both share this endpoint per the spec. The triage actions, comment
 // box, ministry re-assign, and wake-all all PATCH from the browser with only the session cookie,
 // so a key-only guard would 401 every UI mutation.
-export async function PATCH(
-  req: Request,
-  { params }: RouteContext,
-): Promise<Response> {
+export async function PATCH(req: Request, props: RouteContext): Promise<Response> {
+  const params = await props.params;
   const hasKey = await apiKeyGuard(req);
   const hasSession = await isSessionRequest(req);
   if (!hasKey && !hasSession) return unauthorized();

@@ -55,7 +55,7 @@ describe('AC-NEEDS-REVIEW — needs_review filter through the routes', () => {
         headers: { 'Content-Type': 'application/json', ...auth.authHeader },
         body: JSON.stringify({ needs_review: false }),
       }),
-      { params: { id: t1.id } },
+      { params: Promise.resolve({ id: t1.id }) },
     );
     expect(patched.status).toBe(200);
 

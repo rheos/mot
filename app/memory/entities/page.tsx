@@ -13,7 +13,7 @@ import { MemoryNav } from '../../../components/memory/MemoryNav';
 // error renders the island in its error state rather than crashing the route (mirrors
 // app/page.tsx:40-48).
 //
-// Next 14 reads are synchronous, so the page is a sync Server Component like the triage page.
+// The reads here are synchronous, so the page is a sync Server Component like the triage page.
 
 export const dynamic = 'force-dynamic';
 

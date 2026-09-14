@@ -10,7 +10,8 @@ import type { TriageTicketView } from '../components/TriageRow';
 // severity desc then updated_at desc. The result is handed to the client TriageList as
 // initialData, which owns interactivity, the four UI states, and the retry path.
 //
-// Next 14 passes searchParams as a plain (sync) prop. Repeated params (?status=a&status=b)
+// Next 15 passes searchParams as a Promise, so the page awaits it. Repeated params
+// (?status=a&status=b)
 // arrive as string[]; a single value as string. We normalize to arrays and keep only real enum
 // members (mirrors the route handler's filterEnum), so junk params degrade to "no filter".
 
@@ -18,11 +19,12 @@ export const dynamic = 'force-dynamic';
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
-export default function TriagePage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}): React.JSX.Element {
+export default async function TriagePage(
+  props: {
+    searchParams: Promise<SearchParams>;
+  }
+): Promise<React.JSX.Element> {
+  const searchParams = await props.searchParams;
   const opts = buildListOpts(searchParams);
   const query = buildQueryString(searchParams);
   const q = single(searchParams.q)?.trim() || undefined;

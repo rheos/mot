@@ -53,7 +53,7 @@ describe('session-driven mutation — POST/PATCH accept a session cookie, no Bea
 
     const res = await ticketIdRoute.PATCH(
       patchWithSession(id, { status: 'watching' }),
-      { params: { id } },
+      { params: Promise.resolve({ id }) },
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ticket: { status: string } };
@@ -88,7 +88,7 @@ describe('session-driven mutation — POST/PATCH accept a session cookie, no Bea
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'watching' }),
       }),
-      { params: { id } },
+      { params: Promise.resolve({ id }) },
     );
     expect(res.status).toBe(401);
   });

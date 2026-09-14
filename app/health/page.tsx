@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 
 async function getStatus(): Promise<StatusPayload | null> {
   try {
-    const h = headers();
+    const h = await headers();
     const host = h.get('host');
     if (!host) return null;
     const proto = h.get('x-forwarded-proto') ?? 'http';

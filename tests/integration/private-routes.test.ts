@@ -54,7 +54,7 @@ describe('AC-PRIVATE — private visibility through the route handlers', () => {
     expect(keyBody.tickets.map((t) => t.id)).toContain(t1.id);
 
     // 3. GET /tickets/:id with API key only → 200 (no gate between authenticated callers).
-    const keyOne = await ticketIdRoute.GET(getOne(t1.id), { params: { id: t1.id } });
+    const keyOne = await ticketIdRoute.GET(getOne(t1.id), { params: Promise.resolve({ id: t1.id }) });
     expect(keyOne.status).toBe(200);
 
     // 4. GET /tickets with a valid session → T1 present (identical visibility).
@@ -64,7 +64,7 @@ describe('AC-PRIVATE — private visibility through the route handlers', () => {
 
     // 5. GET /tickets/:id with a valid session → 200.
     const sessOne = await ticketIdRoute.GET(getOne(t1.id, auth.sessionCookie), {
-      params: { id: t1.id },
+      params: Promise.resolve({ id: t1.id }),
     });
     expect(sessOne.status).toBe(200);
   });
