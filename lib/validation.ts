@@ -182,7 +182,7 @@ export const writeMemorySchema = z.object({
   type: z.enum(['fact', 'preference', 'deadline', 'person']),
   content: z.object({
     label: z.string().min(1),
-    properties: z.record(z.unknown()),
+    properties: z.record(z.string(), z.unknown()),
   }),
   source_turn_id: z.number().int().positive(),
   source_session_id: z.string().min(1),
