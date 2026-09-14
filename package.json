@@ -42,7 +42,7 @@
     "@vitest/runner": "^1.6.1",
     "autoprefixer": "^10.5.6",
     "drizzle-kit": "^0.31.10",
-    "eslint": "^8.57.1",
+    "eslint": "^10.10.0",
     "eslint-config-next": "^15",
     "playwright": "^1.60.0",
     "postcss": "^8.5.28",
