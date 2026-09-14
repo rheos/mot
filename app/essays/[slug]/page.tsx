@@ -13,7 +13,8 @@ export function generateStaticParams(): { slug: string }[] {
   return essaySlugs().map((slug) => ({ slug }));
 }
 
-export default function EssayPage({ params }: { params: { slug: string } }): React.JSX.Element {
+export default async function EssayPage(props: { params: Promise<{ slug: string }> }): Promise<React.JSX.Element> {
+  const params = await props.params;
   const essay = getEssay(params.slug);
   if (!essay) notFound();
   const label = essayLabel(params.slug);

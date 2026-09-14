@@ -1,18 +1,20 @@
-'use client';
+'use client';;
+import { use } from "react";
 
 // Login (FR-AUTH-2). Centered card, no logo, no chrome — a tool's front door, not a product
 // page. The form posts straight to the login route handler (Prompt 4), which seals the
 // session cookie and redirects to /. On failure it redirects back here with ?error=1; we
 // render one "Invalid credentials" line regardless of which field was wrong (no account
-// enumeration). Next 14 passes searchParams as a plain prop on the page component.
+// enumeration). Next 15 passes searchParams as a Promise, so the page awaits it.
 
 import { apiPath } from '../../lib/client/base-path';
 
-export default function LoginPage({
-  searchParams,
-}: {
-  searchParams: { error?: string };
-}): React.JSX.Element {
+export default function LoginPage(
+  props: {
+    searchParams: Promise<{ error?: string }>;
+  }
+): React.JSX.Element {
+  const searchParams = use(props.searchParams);
   const failed = Boolean(searchParams.error);
 
   return (

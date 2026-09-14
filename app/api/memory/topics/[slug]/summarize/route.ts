@@ -26,10 +26,11 @@ import { summarizeThread } from '../../../../../../lib/topics';
 //   401: unauthorized (session OR API key required)
 interface RouteContext {
   // Next.js 14 (package.json: next ^14.2.35) — params is a plain object, NOT a Promise.
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }
 
-export async function GET(req: Request, { params }: RouteContext): Promise<Response> {
+export async function GET(req: Request, props: RouteContext): Promise<Response> {
+  const params = await props.params;
   const hasKey = await apiKeyGuard(req);
   const hasSession = await isSessionRequest(req);
   if (!hasKey && !hasSession) return unauthorized();

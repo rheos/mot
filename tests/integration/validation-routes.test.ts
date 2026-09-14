@@ -94,7 +94,7 @@ describe('AC-VALIDATION — POST /tickets through the handler', () => {
 describe('AC-VALIDATION — PATCH /tickets/:id through the handler', () => {
   it('4. PATCH status=archived → 422 with the exact "archived status cannot be set via API"', async () => {
     const res = await ticketIdRoute.PATCH(patch(liveId, { status: 'archived' }), {
-      params: { id: liveId },
+      params: Promise.resolve({ id: liveId }),
     });
     expect(res.status).toBe(422);
     const body = (await res.json()) as ValidationBody;
@@ -104,7 +104,7 @@ describe('AC-VALIDATION — PATCH /tickets/:id through the handler', () => {
 
   it('5. PATCH status=snoozed without snoozed_until → 422 with field snoozed_until', async () => {
     const res = await ticketIdRoute.PATCH(patch(liveId, { status: 'snoozed' }), {
-      params: { id: liveId },
+      params: Promise.resolve({ id: liveId }),
     });
     expect(res.status).toBe(422);
     const body = (await res.json()) as ValidationBody;

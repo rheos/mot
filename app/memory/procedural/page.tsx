@@ -14,7 +14,7 @@ import { MemoryNav } from '../../../components/memory/MemoryNav';
 // rule 6). A DB/read error renders the island in its error state rather than crashing the route
 // (mirrors app/memory/entities/page.tsx).
 //
-// Next 14 reads are synchronous, so the page is a sync Server Component like the entities page.
+// The reads here are synchronous, so the page is a sync Server Component like the entities page.
 
 export const dynamic = 'force-dynamic';
 

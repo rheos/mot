@@ -34,7 +34,8 @@ export function TopNav({ lastRun }: { lastRun: string | null }): React.JSX.Eleme
         </Link>
 
         {/* SearchBox reads useSearchParams(); Suspense keeps static prerender of the routes that
-            share this layout (/login, /tickets/new) from bailing out (Next 14 CSR-bailout rule).
+            share this layout (/login, /tickets/new) from bailing out (the useSearchParams
+              CSR-bailout rule).
             The fallback is the same input shape, so there is no layout shift on hydration. */}
         <div
           className="relative order-last w-full min-w-[180px] flex-1 sm:order-none sm:max-w-md [&_input]:h-10 [&_input]:w-full [&_input]:rounded-ministry-sm [&_input]:border [&_input]:border-border [&_input]:bg-surface-2 [&_input]:py-2 [&_input]:pl-10 [&_input]:pr-3 [&_input]:text-sm [&_input]:text-ink [&_input]:shadow-[inset_0_1px_0_rgba(255,255,255,.03)] [&_input]:outline-none [&_input]:placeholder:text-ink-3 [&_input]:focus-visible:border-gold [&_input]:focus-visible:ring-2 [&_input]:focus-visible:ring-gold-line"
