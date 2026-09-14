@@ -10,8 +10,16 @@ updates:
       day: "monday"
     open-pull-requests-limit: 3
     groups:
+      # react, react-dom and their two @types packages have to move as one
+      # unit. Bumped apart they cannot even install: @types/react-dom@19
+      # requires @types/react@19, and npm fails with ERESOLVE (PR #8). Listed
+      # first, and excluded from the catch-all, so neither group claims them
+      # by accident.
+      react-toolchain:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
       javascript-minor-and-patch:
         patterns: ["*"]
+        exclude-patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
         update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
