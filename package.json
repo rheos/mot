@@ -1,12 +1,14 @@
 {
   "name": "mot",
   "version": "0.1.0",
+  "engines": {
+    "node": ">=22.11 <23"
+  },
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx db/migrate.ts",
     "backfill": "tsx scripts/backfill-extraction.ts",
@@ -42,8 +44,6 @@
     "@vitest/runner": "^1.6.1",
     "autoprefixer": "^10.5.6",
     "drizzle-kit": "^0.31.10",
-    "eslint": "^8.57.1",
-    "eslint-config-next": "^15",
     "playwright": "^1.60.0",
     "postcss": "^8.5.28",
     "tailwindcss": "^3.4.19",
