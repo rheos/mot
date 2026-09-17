@@ -95,17 +95,47 @@ Recallatron's structured layers are the opposite: extraction is an LLM call per 
 nightly resolution, dedup, and profile workers are LLM calls per batch. That cost is already real
 enough to have forced batch sizing and a provider swap to OpenRouter.
 
-So the two layers have different marginal cost curves, which is the natural shape of a pricing tier:
+So the two layers have different marginal cost curves:
 
-- **Verbatim episodic** is near-pure compute. Storage and CPU scale with volume; no per-query model
-  cost. Viable as the cheap or entry tier, or as the thing that stays working when a tenant exhausts
-  their allocation.
-- **Structured extraction** costs model tokens per unit of memory written. That is the paid
-  differentiator, and metering it against a capacity allocation is straightforward.
+- **Verbatim episodic** has no per-query model cost. Storage and embedding compute scale with
+  volume.
+- **Structured extraction** costs model tokens per unit of memory written, metered naturally
+  against a capacity allocation.
 
-A tenant who runs out of extraction budget should degrade to verbatim search rather than to nothing.
-That is the same never-reject instinct as the ratified Track-5 degrade contract, applied to billing
-instead of to a missing extension.
+That looks like a pricing tier, with verbatim as the cheap layer. It is not, and the reason is worth
+being precise about.
+
+### The hosted inversion
+
+crispy-recall's embedding compute is free **to its author** because it runs on the user's own
+machine. That is the whole reason a local tool can treat embedding as a fixed cost and a hosted one
+cannot.
+
+Local embedding is free to the vendor and costs the user some laptop CPU. Hosting inverts that
+completely: every embedding is Novadiem's bill, and unlike extraction it is not a fixed cost per
+digest. It
+scales with every turn ever logged, and the storage behind it grows monotonically and forever,
+because the persistence invariant forbids deleting anything for disuse.
+
+So hosted, the cost ordering may be the reverse of the local one. Extraction is bounded work per
+session that produces a small durable artifact. Verbatim is unbounded work producing an unbounded
+artifact. "Cheap tier" is a local-deployment intuition that does not survive the move to a server.
+
+Three ways out, none free:
+
+1. **Embed client-side**, keeping the author's economics. Needs a local model in the client, which
+   reintroduces every native-binding and platform problem the thin-satellite design exists to avoid
+   (see [hub-satellite-topology](hub-satellite-topology-idea.md)).
+2. **Tier by retention rather than by layer.** Verbatim stays hot for N days and then keeps only its
+   extracted structure. That is a real forgetting mechanism and needs checking against the
+   persistence invariant, which forbids decay of *facts*, not of raw transcript.
+3. **Charge for volume.** Honest and simple, and it makes the product's cost legible to the buyer,
+   which the capacity-allocation model already assumes.
+
+The degrade instinct still holds regardless: a tenant who exhausts their extraction budget should
+fall back to verbatim search rather than to nothing, the same way the ratified Track-5 contract
+degrades hybrid to FTS instead of erroring. Which layer is cheap is a separate question from which
+layer is the floor.
 
 ## What M.O.T. already has
 
