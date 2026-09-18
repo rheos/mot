@@ -15,6 +15,7 @@ import { readStatus, resolutionWorker, dedupWorker, autoconfirmWorker } from './
 import { memoryProfile, profileWorker } from './profile';
 import { sendTelegramNotify } from './notify';
 import { runSurfacing } from './surfacing';
+import { checkDeployDrift } from './deploy-drift';
 import { MINISTRY_ADAPTERS } from '../config/ministry-adapters';
 import type { Ministry, Status, Severity } from './enums';
 import path from 'node:path';
@@ -594,6 +595,17 @@ export function listMcpTools(): ToolDef[] {
       inputSchema: { type: 'object', properties: {} },
     },
     {
+      name: 'deploy_drift_check',
+      description:
+        'Compare the commit this container was built from (Coolify\'s SOURCE_COMMIT, which is also ' +
+        'the running image tag) against the current HEAD of the deploy branch on GitHub. Read-only: ' +
+        'files no ticket and closes none, so it is safe to poll — the nightly 02:00 cron is what ' +
+        'raises the alarm. Returns { drifted, deployed_sha, head_sha, behind_by, within_grace, ' +
+        'error, skipped_reason }. skipped_reason is set (and drifted false) outside a deployed ' +
+        'container, e.g. local dev. Runs regardless of MOT_DEPLOY_DRIFT_DISABLE.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
       name: 'maintainer_run',
       description:
         'Trigger the Maintainer worker(s) on demand and return the run summary. worker defaults ' +
@@ -984,6 +996,14 @@ export async function callMcpTool(
     case 'maintainer_status': {
       try {
         return text(readStatus());
+      } catch (e) {
+        return text({ error: String(e) });
+      }
+    }
+
+    case 'deploy_drift_check': {
+      try {
+        return text(await checkDeployDrift());
       } catch (e) {
         return text({ error: String(e) });
       }

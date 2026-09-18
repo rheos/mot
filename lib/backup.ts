@@ -7,6 +7,7 @@ import { resolutionWorker, dedupWorker, autoconfirmWorker } from './maintainer';
 import { profileWorker } from './profile';
 import { runSurfacing } from './surfacing';
 import { reportWorkerHealth } from './maintainer-health';
+import { runDeployDriftCheck } from './deploy-drift';
 // NOTE: prunePendingProcedural / prunePendingEntities are intentionally NOT imported here anymore.
 // The nightly job no longer disuse-prunes memories — persistence is a hard product requirement
 // (a fact the user stated once must survive indefinitely, even if never referenced again). The prune
@@ -58,6 +59,18 @@ export function backupGraph(backupDir: string): void {
 export function scheduleNightly(): void {
   const backupDir = process.env.BACKUP_PATH ?? './backups';
   schedule('0 2 * * *', async () => {
+    // ── Deploy-drift alarm (runs FIRST) ─────────────────────────────────────────
+    // Two HTTP calls, no DB and no LLM, so it costs nothing to put ahead of the backup — and
+    // running first means it still reports on a night when a later step hangs. (The LLM workers
+    // below block the event loop for minutes at a time; see CLAUDE.local.md.) Own try/catch like
+    // every other step: a drift check that can take down the nightly job is worse than none.
+    try {
+      await runDeployDriftCheck();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[MOT/nightly] deploy-drift check failed:', e);
+    }
+
     try {
       vacuumInto(backupDir);
       // RETENTION SWEEP SLOT — reserved for Phase 4 (config/retention_policy.ts drives it).
@@ -115,7 +128,8 @@ export function scheduleNightly(): void {
     // blocks the other or the rest of the nightly job (FR-12/AC-10). The env short-circuits
     // (MAINTAINER_*_DISABLE='1') let the operator turn a worker off without a deploy (FR-14/AC-7):
     // one log line, NO worker call, NO write. Sequence so far:
-    //   vacuumInto → backupGraph → [compact if ≥5MB] → resolution → dedup → autoconfirm → profile.
+    //   deploy-drift → vacuumInto → backupGraph → [compact if ≥5MB] → resolution → dedup →
+    //   autoconfirm → profile.
     // Each worker's return status is pushed through reportWorkerHealth (lib/maintainer-health.ts):
     // ok:false files/updates a critical M.O.T. ticket (Telegram page on first failure, silent
     // dedup-update on repeat), ok:true closes a previously-open alert. A worker that THROWS outright

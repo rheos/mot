@@ -99,6 +99,14 @@ vi.mock('../../lib/maintainer-health', () => ({
   reportWorkerHealth: (worker: string, status: unknown) => reportWorkerHealth(worker, status),
 }));
 
+// The deploy-drift alarm (lib/deploy-drift.ts) — mocked for the same reason: this file tests the
+// WIRING (it runs, it runs FIRST, and a throw from it cannot abort the rest of the nightly job).
+// deploy-drift.test.ts and deploy-drift-alerting.test.ts cover the check and its tickets.
+const runDeployDriftCheck = vi.fn(async () => ({ ok: true, drifted: false }));
+vi.mock('../../lib/deploy-drift', () => ({
+  runDeployDriftCheck: () => runDeployDriftCheck(),
+}));
+
 // Track 7 — mock runSurfacing so the surfacing cron wiring is tested in isolation (no real scan,
 // no graph read, no send). Default: a valid zero-state summary; individual tests override.
 const runSurfacing = vi.fn(async (_opts?: { dryRun?: boolean; horizonDays?: number }) => ({
@@ -181,6 +189,8 @@ beforeEach(() => {
     disabled: false,
   }));
   reportWorkerHealth.mockClear();
+  runDeployDriftCheck.mockClear();
+  runDeployDriftCheck.mockImplementation(async () => ({ ok: true, drifted: false }));
   delete process.env.MOT_GRAPH_PATH;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
@@ -530,5 +540,57 @@ describe('scheduleNightly — Track 7 surfacing cron registration', () => {
 
     // The 02:00 maintenance cron stays optionless (no TZ requirement — it runs at 02:00 UTC).
     expect(scheduledOptions['0 2 * * *']).toBeUndefined();
+  });
+});
+
+// ── Deploy-drift alarm wiring (lib/deploy-drift.ts) ──────────────────────────────────────────
+// Production sat five days behind main on 2026-09-18 with nothing watching. The check now rides
+// this cron, and these tests pin the three things the wiring has to guarantee.
+describe('scheduleNightly — deploy-drift alarm', () => {
+  it('runs the drift check once in the nightly pass', async () => {
+    await runNightly();
+    expect(runDeployDriftCheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs it BEFORE the backup, so a later hang cannot swallow the report', async () => {
+    const order: string[] = [];
+    runDeployDriftCheck.mockImplementation(async () => {
+      order.push('drift');
+      return { ok: true, drifted: false };
+    });
+    compactGraph.mockImplementation(async () => {
+      order.push('compact');
+    });
+    resolutionWorker.mockImplementation(async () => {
+      order.push('resolution');
+      return {
+        last_run: new Date().toISOString(),
+        ok: true,
+        named_nodes_minted: 0,
+        edges_linked: 0,
+        batches_failed: 0,
+        error: null,
+      };
+    });
+
+    await runNightly();
+    expect(order[0]).toBe('drift');
+    expect(order).toContain('resolution');
+  });
+
+  it('a throw from the drift check is caught and the rest of the nightly job still runs', async () => {
+    runDeployDriftCheck.mockRejectedValueOnce(new Error('github exploded'));
+
+    await expect(runNightly()).resolves.not.toThrow();
+    // The workers downstream of it all still ran.
+    expect(resolutionWorker).toHaveBeenCalledTimes(1);
+    expect(dedupWorker).toHaveBeenCalledTimes(1);
+    expect(autoconfirmWorker).toHaveBeenCalledTimes(1);
+    expect(profileWorker).toHaveBeenCalledTimes(1);
+    expect(
+      errSpy.mock.calls.some((c) =>
+        String(c[0]).includes('[MOT/nightly] deploy-drift check failed'),
+      ),
+    ).toBe(true);
   });
 });
