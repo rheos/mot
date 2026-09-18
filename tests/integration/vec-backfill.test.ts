@@ -197,6 +197,41 @@ describe.skipIf(SKIP)('scripts/backfill-embeddings — backfill (AC 8)', () => {
     TEST_TIMEOUT,
   );
 
+  it(
+    'TEST 5 (issue #30) — a stale-representation row is RE-embedded, not skipped',
+    async () => {
+      // Get every row current first, so the only pending work below is what we deliberately stale.
+      await runBackfillEmbeddings({ dryRun: false, concurrency: 5 });
+
+      const turnId = seedTurn('a turn whose vector predates the current embed representation');
+      await runBackfillEmbeddings({ dryRun: false, concurrency: 5 });
+      expect(vecCount('conversation_vec', 'turn_id', turnId)).toBe(1);
+
+      // Simulate a row written before 0010 existed: the vector is there, the stamp is not.
+      // vecStaleIds must treat absent metadata as representation 1 (see 0010_embed_version.sql).
+      getDb().prepare('DELETE FROM vec_meta WHERE table_name = ? AND row_id = ?')
+        .run('conversation_vec', String(turnId));
+
+      const rowsBefore = vecRowCount('conversation_vec');
+      const run = await runBackfillEmbeddings({ dryRun: false, concurrency: 5 });
+
+      // Counted as restale (present but outdated), embedded, and NOT skipped.
+      expect(run.conversation_vec.restale).toBe(1);
+      expect(run.conversation_vec.embedded).toBe(1);
+      expect(run.conversation_vec.errored).toBe(0);
+
+      // vecReplace semantics: re-embedded in place, so no duplicate vector row appeared.
+      expect(vecRowCount('conversation_vec')).toBe(rowsBefore);
+      expect(vecCount('conversation_vec', 'turn_id', turnId)).toBe(1);
+
+      // The stamp is restored, so a further run is a no-op again.
+      const after = await runBackfillEmbeddings({ dryRun: false, concurrency: 5 });
+      expect(after.conversation_vec.restale).toBe(0);
+      expect(after.conversation_vec.embedded).toBe(0);
+    },
+    TEST_TIMEOUT,
+  );
+
   // TEST 3 — AC 10 (skipIf guard proven): there is no explicit assertion here. When the sqlite-vec
   // extension can't load OR the embedder can't init, SKIP is true and vitest marks THIS ENTIRE
   // describe block 'skipped' (never 'failed'). The always-run parseArgs block above confirms the

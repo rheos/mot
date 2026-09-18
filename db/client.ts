@@ -42,6 +42,7 @@ const HAND_WRITTEN_MIGRATIONS = [
   '0007_vec.sql',
   '0008_relation_draft.sql',
   '0009_surfaced_ledger.sql',
+  '0010_embed_version.sql',
 ];
 
 function applyHandWrittenMigrations(db: DB, migrationsFolder: string): void {

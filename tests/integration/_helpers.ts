@@ -28,6 +28,9 @@ export function setupTempDb(label: string): string {
   migrate(drizzle(seed), { migrationsFolder });
   // Step 2: hand-written FTS migration (0001_fts.sql).
   seed.exec(fs.readFileSync(path.join(migrationsFolder, '0001_fts.sql'), 'utf8'));
+  // vec_meta: needed even without the vec tables, because vecDelete (memory supersede,
+  // graph-compact) deletes its sidecar row unconditionally.
+  seed.exec(fs.readFileSync(path.join(migrationsFolder, '0010_embed_version.sql'), 'utf8'));
   seed.close();
 
   process.env.DATABASE_URL = dbPath;
@@ -75,6 +78,9 @@ export function setupVecDb(label: string): { dbPath: string; vecAvail: boolean }
     // 0007_vec.sql's CREATE VIRTUAL TABLE ... USING vec0 needs the extension loaded (above).
     seed.exec(fs.readFileSync(path.join(migrationsFolder, '0007_vec.sql'), 'utf8'));
   }
+  // 0010 is a plain table (vec_meta), so it applies whether or not the extension loaded —
+  // vecDelete touches vec_meta unconditionally, including on an extension-less box.
+  seed.exec(fs.readFileSync(path.join(migrationsFolder, '0010_embed_version.sql'), 'utf8'));
   seed.close();
 
   process.env.DATABASE_URL = dbPath;
