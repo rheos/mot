@@ -20,7 +20,7 @@ import type {
   Author,
 } from './enums';
 import type { CreateTicketInput, PatchTicketInput } from './validation';
-import { ftsPhrase } from './fts';
+import { ftsQuery } from './fts';
 
 // ── Data layer (FR-API-1/2/3/4, FR-LC-1, AC-EC1/EC3/EC4) ──────────────────────
 // The contract Prompt 8's route handlers consume — handlers call NOTHING else in the data
@@ -340,7 +340,11 @@ export function listTickets(opts: ListOpts): ListResult {
   const params: unknown[] = [];
 
   const trimmedQ = opts.q?.trim();
-  const useFts = !!trimmedQ;
+  // Build the MATCH expression FIRST: a query that is non-empty but tokenizes to nothing
+  // (all punctuation, say) yields '', and `MATCH ''` is an FTS5 syntax error. Treat that as
+  // "no FTS constraint", the same as an absent q, rather than erroring the whole list call.
+  const matchExpr = trimmedQ ? ftsQuery(trimmedQ, 'ticket_fts') : '';
+  const useFts = matchExpr !== '';
 
   // FTS join (FR-API-3 q). Both FTS and the private gate apply simultaneously — the gate is
   // just another AND clause below.
@@ -349,7 +353,7 @@ export function listTickets(opts: ListOpts): ListResult {
     : 'ticket';
   if (useFts) {
     where.push('ticket_fts MATCH ?');
-    params.push(ftsPhrase(trimmedQ!));
+    params.push(matchExpr);
   }
 
   // Private gate — IN THE SQL (FR-API-3, AC-PRIVATE). API-key-only requests pass

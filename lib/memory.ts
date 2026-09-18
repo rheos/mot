@@ -5,7 +5,7 @@
 
 import { getDb } from '../db/client';
 import { nowIso } from './time';
-import { ftsPhrase } from './fts';
+import { ftsQuery } from './fts';
 import { indexAsync, vecDelete, vecAvailable, vecKnn } from './vec';
 import { embeddingEnabled, embed } from './embedding';
 import { rrfMerge } from './rrf';
@@ -282,13 +282,16 @@ export function getActiveMemory(chatId?: string, limit = 20): MemoryRow[] {
 // (getActiveMemory) owns the "return everything" behavior.
 //
 // memory_items_fts is the external-content index (rowid = memory_items.id, db/memory_fts.sql);
-// JOIN it back to memory_items to read the full row. ftsPhrase wraps q as a quoted phrase so
-// hyphens/apostrophes don't trip the FTS5 query grammar (same as searchTurns in conversation.ts).
+// JOIN it back to memory_items to read the full row. ftsQuery tokenizes, drops corpus-common
+// terms and OR-joins the rest, each token quoted so the FTS5 query grammar cannot be injected
+// (same as searchTurns in conversation.ts). See issue #37 for why the old whole-phrase form
+// matched nothing.
 export function searchActiveMemory(q: string, chatId?: string, limit = 20): MemoryRow[] {
   if (q.trim() === '') return [];
 
   const db = getDb();
-  const phrase = ftsPhrase(q);
+  const phrase = ftsQuery(q, 'memory_items_fts');
+  if (phrase === '') return [];
 
   if (chatId !== undefined) {
     return db

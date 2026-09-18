@@ -94,12 +94,53 @@ rarest-five fallback means it can never produce an empty match; and the threshol
 so it can be tuned or set to 1.0 to disable the filter entirely without a deploy if it is read at
 call time.
 
-## Possible next step
+## Outcome (2026-09-18, issue #37 / built)
 
-Run the measurement before writing any code. Query `messages_fts_vocab`'s equivalent for the
-M.O.T. FTS tables and list the terms above 15% document frequency. That list answers the whole
-question. If it is "the, and, robin, ticket", the filter is clearly right. If it contains something
-load-bearing, the threshold needs to move before this ships.
+The measurement was run and it changed the design, so this section records what was learned rather
+than what to try.
 
-Pair it with a handful of real queries from the conversation log, run three ways: current quoted
-phrase, naive OR, and IDF-filtered OR. That comparison is cheap and settles the design.
+**The bug was worse than "suboptimal ranking".** Whole-phrase quoting meant natural-language
+queries matched *nothing at all*. Against live prod:
+
+```
+"why did we move off the lightsail box"  ->  0 hits
+"lightsail"                              ->  3 solid hits
+```
+
+Since `mode: 'hybrid'` RRF-merges this arm with the vector arm, hybrid had been silently
+vector-only for every real question. The keyword half of retrieval was not contributing.
+
+**The corpus-adaptive filter alone under-filters on a small corpus, and lowering the threshold is
+not the fix.** On 1,034 documents only 23 terms exceed 15% document frequency. `the` (54%) is
+correctly dropped, but `why`, `did`, `we` and `off` all sit *below* the line and survive, because
+there are not yet enough documents for them to cross it. And the threshold cannot simply be lowered:
+
+```
+we    10.6%      <- function word, want it gone
+mcp   11.1%      <- domain term, must keep
+tool  11.3%      <- domain term, must keep
+```
+
+Any cut aggressive enough to catch the function words eats the vocabulary that actually
+discriminates.
+
+**So the shipped design is the union of two filters**, which is a divergence from crispy-recall:
+
+- a short list of structurally contentless English function words, dropped regardless of frequency;
+- the corpus-adaptive DF filter, which catches words that become common in *this* corpus over time
+  (`mot`, `ticket`, `rheo` eventually) and which a static list could never keep up with.
+
+Neither half is sufficient. crispy-recall gets away with the adaptive half alone because its corpus
+is large enough that function words cross the threshold on their own.
+
+Effect on the expression built for the sample query: `"why" OR "did" OR "we" OR "move" OR "off" OR
+"lightsail" OR "box"` became `"move" OR "lightsail" OR "box"`.
+
+**Confirmed as designed:** `fts5vocab` works on these contentless (`content=''`) tables, since it
+reads the index rather than the content. And index-native stemming earns its keep — `deployed`
+stems to `deploi`, which a JS Porter implementation may well render differently.
+
+**Still open:** whether OR is the right join. It buys recall and lets BM25 rank, but a query like
+"what did we decide about the database" still returns one off-topic row matching only `decide`. In
+hybrid that is diluted by the vector arm; in `mode: 'fts'` it is visible. Worth revisiting if
+keyword-only search gets used in anger.
