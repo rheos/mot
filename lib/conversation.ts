@@ -1,5 +1,5 @@
 import { getDb } from '../db/client';
-import { ftsPhrase } from './fts';
+import { ftsQuery } from './fts';
 import { indexAsync, vecKnn, vecAvailable } from './vec';
 import { embed, embeddingEnabled } from './embedding';
 import { rrfMerge } from './rrf';
@@ -123,9 +123,12 @@ export function searchTurns(
   mode?: 'fts' | 'vector' | 'hybrid',
 ): Turn[] | Promise<Turn[]> {
   if (!mode || mode === 'fts') {
-    // Existing FTS logic verbatim — do not change a character of this arm.
     const db = getDb();
-    const phrase = ftsPhrase(q);
+    // Was ftsPhrase (whole-query exact phrase), which returned [] for every natural-language
+    // question while the content sat in the index — and, because hybrid RRF-merges this arm,
+    // silently made hybrid vector-only (issue #37).
+    const phrase = ftsQuery(q, 'conversation_fts');
+    if (phrase === '') return [];
     if (chatId) {
       return db
         .prepare(
