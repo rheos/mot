@@ -277,6 +277,14 @@ describe.skipIf(SKIP)('Track 5 — vec retrieval', () => {
       // The provenance travels with it and describes the arm that actually ran.
       expect(viaDefault.retrieval.mode).toBe('fts');
       expect(viaDefault.retrieval.fts_count).toBe(r1.length);
+
+      // TRUE path for semantic_available — this file runs with embedding ENABLED, so it is the
+      // only place the healthy case can be asserted. The main provenance suite runs with
+      // MOT_EMBED_DISABLE=1 and can only ever observe false.
+      const hybrid = await call<{ retrieval: { semantic_available?: boolean } }>(
+        'chat_search', { q, mode: 'hybrid' },
+      );
+      expect(hybrid.retrieval.semantic_available).toBe(true);
     },
     TEST_TIMEOUT,
   );
