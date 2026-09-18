@@ -267,10 +267,16 @@ describe.skipIf(SKIP)('Track 5 — vec retrieval', () => {
       expect(r1.some((r) => r.id === turn.id)).toBe(true);
 
       // Third form: mode:'fts' via the dispatch === no-mode (default) === direct sync call.
-      const viaDefault = await call<Turn[]>('chat_search', { q });
-      const viaFts = await call<Turn[]>('chat_search', { q, mode: 'fts' });
-      expect(viaFts).toEqual(viaDefault);
-      expect(viaDefault).toEqual(r1);
+      // Since issue #45 chat_search returns { retrieval, results } rather than a bare array, so
+      // the parity being asserted is over `results`; the rows themselves are unchanged.
+      type SearchPayload = { retrieval: { mode: string; fts_count?: number }; results: Turn[] };
+      const viaDefault = await call<SearchPayload>('chat_search', { q });
+      const viaFts = await call<SearchPayload>('chat_search', { q, mode: 'fts' });
+      expect(viaFts.results).toEqual(viaDefault.results);
+      expect(viaDefault.results).toEqual(r1);
+      // The provenance travels with it and describes the arm that actually ran.
+      expect(viaDefault.retrieval.mode).toBe('fts');
+      expect(viaDefault.retrieval.fts_count).toBe(r1.length);
     },
     TEST_TIMEOUT,
   );
