@@ -31,7 +31,11 @@ beforeAll(async () => {
   ({ getDb } = await import('../../db/client'));
 });
 afterAll(() => cleanupTempDb(dbPath));
-beforeEach(() => getDb().prepare('DELETE FROM tool_call_log').run());
+// Braces matter: a bodiless arrow returns RunResult, which vitest types as a hook cleanup
+// callback and tsc rejects. vitest run does not typecheck, so this only surfaces under tsc.
+beforeEach(() => {
+  getDb().prepare('DELETE FROM tool_call_log').run();
+});
 
 describe('what gets recorded', () => {
   it('captures the query text, its word count, and the mode for a search', async () => {
