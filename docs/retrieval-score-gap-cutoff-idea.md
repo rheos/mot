@@ -90,3 +90,22 @@ Land it as an opt-in first. Expose scores from `rrfMerge`, add the cutoff as a p
 unit tests over synthetic score lists, and wire it to one tool (`chat_search` is the best candidate,
 since it has the noisiest tail) behind a parameter. Compare real queries with and without before
 making it the default anywhere.
+
+## Outcome (2026-09-18, issue #40 / built)
+
+Shipped as `scoreGapCutoff` in `lib/rrf.ts`, applied to all three hybrid paths.
+
+The prerequisite this doc flagged was real: `rrfMerge` computed `{item, score}` internally and
+mapped it away. It now has a `rrfMergeScored` sibling returning scores plus which input lists
+contributed, with `rrfMerge` kept as a thin wrapper so no existing caller churned. That same
+refactor is what any future recency or confidence work needs.
+
+**Honest sizing of the benefit here.** crispy-recall runs a default limit of 200 and lets the gap
+cut do the real work. M.O.T.'s limits are around 20, and the scan starts at position 10, so on most
+queries against a 1,034-turn corpus the cutoff is a no-op. That is correct behaviour, not a defect:
+it shrinks a list only when there is a genuine cliff, and the caller's `limit` remains the ceiling.
+
+So this is infrastructure ahead of need rather than an immediate win. It earns its keep when limits
+grow, and it ports to Rheo Stream phase 2 as a finished, tested pure function rather than a design
+note. Both of those were worth the small cost; a bigger claim would be overstating it.
+

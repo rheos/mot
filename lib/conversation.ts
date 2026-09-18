@@ -2,7 +2,7 @@ import { getDb } from '../db/client';
 import { ftsQuery } from './fts';
 import { indexAsync, vecKnn, vecAvailable } from './vec';
 import { embed, embeddingEnabled } from './embedding';
-import { rrfMerge } from './rrf';
+import { rrfMergeScored, scoreGapCutoff, FUSION_FETCH_MULTIPLIER } from './rrf';
 
 const SESSION_GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -160,11 +160,16 @@ export function searchTurns(
   //     (FTS-fallback, NOT []); [] with a log line only if the fts arm ITSELF throws.
   return (async (): Promise<Turn[]> => {
     // ── Vector arm ──
+    // Over-fetch for fusion (issue #40): both arms gather more than the caller asked for, so RRF
+    // can see rows BOTH arms ranked. Truncation back to `limit` happens after the merge. On the
+    // vector-only path this is unused — that arm still returns exactly `limit`.
+    const fuseLimit = mode === 'hybrid' ? limit * FUSION_FETCH_MULTIPLIER : limit;
+
     let vectorRows: Turn[] = [];
     if (q.trim() !== '' && vecAvailable() && embeddingEnabled()) {
       try {
-        // Uniform over-fetch rule (W3): fetch k = min(limit * 4, 256), filter down to limit.
-        const k = Math.min(limit * 4, 256);
+        // Uniform over-fetch rule (W3): fetch k = min(n * 4, 256), filter down to n.
+        const k = Math.min(fuseLimit * 4, 256);
         const f32 = await embed(q); // EC 1: embedder init failure → caught below
         const hits = vecKnn(getDb(), 'conversation_vec', f32, k);
         if (hits.length > 0) {
@@ -183,7 +188,7 @@ export function searchTurns(
           // Re-sort to match KNN distance order (IN clause returns in arbitrary order).
           const rankMap = new Map(hits.map((h, i) => [h.id as number, i]));
           rows.sort((a, b) => (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0));
-          vectorRows = rows.slice(0, limit);
+          vectorRows = rows.slice(0, fuseLimit);
         }
       } catch (err) {
         console.error('[MOT/conversation] searchTurns vector arm degraded to []:', err);
@@ -196,17 +201,20 @@ export function searchTurns(
     // ── Hybrid: fts arm under its own guard ──
     let ftsRows: Turn[];
     try {
-      ftsRows = searchTurns(q, chatId, limit); // binds to sync overload — no await
+      ftsRows = searchTurns(q, chatId, fuseLimit); // binds to sync overload — no await
     } catch (err) {
       console.error('[MOT/conversation] searchTurns hybrid fts arm degraded to []:', err);
       return [];
     }
 
-    // FTS-fallback: a degraded/empty vector arm yields exactly the mode:'fts' result
-    // (already truncated to `limit` by the sync arm's SQL LIMIT).
-    if (vectorRows.length === 0) return ftsRows;
+    // FTS-fallback: a degraded/empty vector arm yields exactly the mode:'fts' result.
+    // Sliced explicitly: the fts arm was asked for fuseLimit (3x) for fusion, so without this
+    // a dead vector arm would hand the caller three times what it asked for.
+    if (vectorRows.length === 0) return ftsRows.slice(0, limit);
 
-    // Both arms live: merge via RRF (FR 14).
-    return rrfMerge<Turn>([ftsRows, vectorRows], { limit });
+    // Both arms live: merge via RRF (FR 14), then cut at the score cliff if there is one.
+    // The cutoff only ever shrinks the list, so `limit` remains the hard ceiling.
+    const scored = rrfMergeScored<Turn>([ftsRows, vectorRows], { limit });
+    return scoreGapCutoff(scored).map((e) => e.item);
   })();
 }
