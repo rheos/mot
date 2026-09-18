@@ -1,3 +1,15 @@
+// FTS5 query construction: turning a human's words into a MATCH expression that cannot inject
+// operators and still matches something.
+//
+// ATTRIBUTION. The index-native stemming trick — pushing a term through a scratch FTS5 table that
+// uses the SAME tokenizer, so a query stem cannot disagree with the index stem — and the
+// corpus-adaptive document-frequency filter follow crispy-recall by Sylvester Wong
+// (https://github.com/TheSylvester/crispy-recall), MIT licensed, Copyright (c) 2026 Sylvester
+// Wong. `fts5Stem` is a close paraphrase of the original in its `src/recall/query-sanitizer.ts`.
+// The structural stopword union, the quoted-phrase-preserving tokenizer and the separator
+// normalisation are ours, added because the adaptive filter alone under-filters at this corpus
+// size (see docs/retrieval-idf-query-filtering-idea.md for the measurement).
+//
 // FTS5 query helpers — shared by lib/tickets.ts, lib/conversation.ts and lib/memory.ts.
 //
 // The job here is to turn a human's words into an FTS5 MATCH expression that (a) cannot inject
