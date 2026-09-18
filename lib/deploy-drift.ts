@@ -70,6 +70,20 @@ function intEnv(name: string, fallback: number): number {
   return Number.isInteger(raw) && raw >= 0 ? raw : fallback;
 }
 
+/**
+ * Read an env var, treating blank as absent. Load-bearing, not defensive: `??` only falls through
+ * on null/undefined, and .env.local.example ships every knob as `KEY=` (as AGENTS.md tells you to
+ * copy it). Without this, `MOT_DEPLOYED_SHA=` masks SOURCE_COMMIT and the check skips forever —
+ * the monitor silently disabling itself, which is the exact failure this module exists to stop.
+ * A blank MOT_DEPLOY_REPO would likewise build a request against `/repos//commits/...`.
+ */
+function envStr(name: string): string | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
 function config() {
   return {
     disabled: process.env.MOT_DEPLOY_DRIFT_DISABLE === '1',
@@ -77,13 +91,13 @@ function config() {
     // skip. Production should set it, so that Coolify dropping SOURCE_COMMIT some day surfaces as
     // a broken check instead of as a monitor that silently stopped monitoring.
     required: process.env.MOT_DEPLOY_DRIFT_ENABLE === '1',
-    repo: (process.env.MOT_DEPLOY_REPO ?? DEFAULT_REPO).trim(),
+    repo: envStr('MOT_DEPLOY_REPO') ?? DEFAULT_REPO,
     // COOLIFY_BRANCH is whatever branch this app actually deploys from, so a preview app compares
     // against its own branch rather than falsely reporting itself behind main.
-    branch: (process.env.MOT_DEPLOY_BRANCH ?? process.env.COOLIFY_BRANCH ?? 'main').trim(),
-    deployedSha: (process.env.MOT_DEPLOYED_SHA ?? process.env.SOURCE_COMMIT ?? '').trim(),
+    branch: envStr('MOT_DEPLOY_BRANCH') ?? envStr('COOLIFY_BRANCH') ?? 'main',
+    deployedSha: envStr('MOT_DEPLOYED_SHA') ?? envStr('SOURCE_COMMIT') ?? '',
     graceMinutes: intEnv('MOT_DEPLOY_DRIFT_GRACE_MINUTES', DEFAULT_GRACE_MINUTES),
-    token: (process.env.MOT_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? '').trim(),
+    token: envStr('MOT_GITHUB_TOKEN') ?? envStr('GITHUB_TOKEN') ?? '',
   };
 }
 
@@ -303,6 +317,9 @@ export async function runDeployDriftCheck(): Promise<DeployDriftResult> {
     result = { ...baseResult(config()), ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 
+  // The two alert identities report in SEPARATE try/catch blocks, on purpose. Sharing one would
+  // mean a DB hiccup while filing the check-health ticket swallows the drift page underneath it —
+  // one monitor silencing another, which is the failure this module was written to end.
   try {
     if (result.error) {
       // Blind, not necessarily stale. Leave any open drift ticket alone: we no longer know.
@@ -315,7 +332,12 @@ export async function runDeployDriftCheck(): Promise<DeployDriftResult> {
     } else if (result.checked) {
       clearAlert(CHECK_SOURCE_REF, 'Resolved — the deploy-drift check ran successfully again.');
     }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('[MOT/deploy-drift] failed to report check health:', e);
+  }
 
+  try {
     if (result.drifted && !result.within_grace) {
       fileAlert({
         sourceRef: DRIFT_SOURCE_REF,

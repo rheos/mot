@@ -16,7 +16,7 @@ const LONG_AGO = '2026-09-01T00:00:00Z';
 
 const dbPath = setupTempDb('deploy-drift-alerting');
 const { runDeployDriftCheck } = await import('../../lib/deploy-drift');
-const { listTickets, getTicket } = await import('../../lib/tickets');
+const { listTickets, getTicket, patchTicket } = await import('../../lib/tickets');
 
 function openAlerts(sourceRef: string) {
   return listTickets({
@@ -60,6 +60,40 @@ function mockGithub(
   );
 }
 
+/**
+ * Close every open deploy:* alert, so each test starts from a known-clean slate. These tests share
+ * one temp DB (setupTempDb is per FILE) and the alert source_refs are deliberately stable, so
+ * without this a test would inherit whatever the previous one left open — and `createTicket`'s
+ * dedup REOPENS a done ticket on a re-fire, which quietly hides an ordering dependency.
+ */
+function resetAlerts(): void {
+  for (const ref of ['deploy:drift', 'deploy:drift-check']) {
+    for (const t of openAlerts(ref)) {
+      patchTicket(t.id, { status: 'done' });
+    }
+  }
+}
+
+/** Put production into the drifted-and-past-grace state this file keeps needing as a precondition. */
+async function seedDrift(aheadBy = 2): Promise<string> {
+  process.env.SOURCE_COMMIT = OLD;
+  mockGithub({ headSha: HEAD, aheadBy });
+  await runDeployDriftCheck();
+  const tickets = openAlerts('deploy:drift');
+  expect(tickets).toHaveLength(1);
+  return tickets[0].id;
+}
+
+/** Put the check itself into the cannot-run state. */
+async function seedCheckFailure(): Promise<string> {
+  process.env.SOURCE_COMMIT = HEAD;
+  mockGithub('down');
+  await runDeployDriftCheck();
+  const tickets = openAlerts('deploy:drift-check');
+  expect(tickets).toHaveLength(1);
+  return tickets[0].id;
+}
+
 const ENV_KEYS = [
   'MOT_DEPLOYED_SHA',
   'SOURCE_COMMIT',
@@ -76,6 +110,7 @@ let errSpy = vi.spyOn(console, 'error');
 
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
+  resetAlerts();
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -118,23 +153,21 @@ describe('runDeployDriftCheck — drift alerting', () => {
   });
 
   it('a second night of drift dedups onto the same ticket — one page, not two', async () => {
-    process.env.SOURCE_COMMIT = OLD;
-    mockGithub({ headSha: HEAD, aheadBy: 4 });
-
-    const before = openAlerts('deploy:drift');
-    expect(before).toHaveLength(1);
+    await seedDrift(4);
+    const before = openAlerts('deploy:drift')[0];
 
     await runDeployDriftCheck();
 
     const after = openAlerts('deploy:drift');
     expect(after).toHaveLength(1);
-    expect(after[0].id).toBe(before[0].id);
-    expect(after[0].event_count).toBeGreaterThan(before[0].event_count);
+    expect(after[0].id).toBe(before.id);
+    expect(after[0].event_count).toBeGreaterThan(before.event_count);
   });
 
   it('closes the drift ticket with a resolution comment once production catches up', async () => {
-    const ticketId = openAlerts('deploy:drift')[0].id;
+    const ticketId = await seedDrift();
 
+    vi.unstubAllGlobals();
     process.env.SOURCE_COMMIT = HEAD;
     mockGithub({ headSha: HEAD });
 
@@ -174,13 +207,9 @@ describe('runDeployDriftCheck — check-failure alerting', () => {
   });
 
   it('leaves any open drift ticket alone while blind — a failed check is not a recovery', async () => {
-    // Establish real drift first...
-    process.env.SOURCE_COMMIT = OLD;
-    mockGithub({ headSha: HEAD, aheadBy: 2 });
-    await runDeployDriftCheck();
-    expect(openAlerts('deploy:drift')).toHaveLength(1);
+    await seedDrift();
 
-    // ...then go blind. The drift ticket must survive: we no longer know that it resolved.
+    // Go blind. The drift ticket must survive: we no longer know that it resolved.
     vi.unstubAllGlobals();
     mockGithub('down');
     await runDeployDriftCheck();
@@ -189,15 +218,30 @@ describe('runDeployDriftCheck — check-failure alerting', () => {
   });
 
   it('closes the check-failure ticket once the check runs again', async () => {
-    const checkTicketId = openAlerts('deploy:drift-check')[0].id;
+    const checkTicketId = await seedCheckFailure();
 
+    vi.unstubAllGlobals();
     process.env.SOURCE_COMMIT = HEAD;
     mockGithub({ headSha: HEAD });
     await runDeployDriftCheck();
 
     expect(getTicket(checkTicketId, true)!.status).toBe('done');
     expect(openAlerts('deploy:drift-check')).toHaveLength(0);
-    // Production is back in sync, so the drift ticket clears in the same pass.
+  });
+
+  // A fault filing one alert identity must not swallow the other. They report in separate
+  // try/catch blocks precisely so a hiccup on the check-health ticket cannot silence a drift page.
+  it('clears BOTH identities in one pass when a recovered check also finds production in sync', async () => {
+    await seedDrift();
+    const checkTicketId = await seedCheckFailure();
+
+    vi.unstubAllGlobals();
+    process.env.SOURCE_COMMIT = HEAD;
+    mockGithub({ headSha: HEAD });
+    await runDeployDriftCheck();
+
+    expect(getTicket(checkTicketId, true)!.status).toBe('done');
+    expect(openAlerts('deploy:drift-check')).toHaveLength(0);
     expect(openAlerts('deploy:drift')).toHaveLength(0);
   });
 });

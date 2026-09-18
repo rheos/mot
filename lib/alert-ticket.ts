@@ -54,8 +54,11 @@ export function fileAlert(spec: AlertSpec): void {
 export function clearAlert(sourceRef: string, resolutionNote: string): void {
   const existing = findOpenTicketBySourceRef(sourceRef, ALERT_TICKET_TYPE);
   if (!existing) return;
-  patchTicket(existing.id, { status: 'done' });
+  // One call, not two: patchTicket applies the status change and the comment inside a single
+  // transaction, so the ticket can never end up closed with no record of why. (maintainer-health
+  // used two sequential calls; a crash between them left exactly that.)
   patchTicket(existing.id, {
+    status: 'done',
     add_comment: { author: 'tuttle', body: resolutionNote },
   });
 }

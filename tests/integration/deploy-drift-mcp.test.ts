@@ -11,7 +11,12 @@ vi.mock('../../db/client', () => ({ getDb: vi.fn(() => ({ exec: vi.fn() })) }));
 
 const { listMcpTools, callMcpTool } = await import('../../lib/mcp-tools');
 
-const ENV_KEYS = ['SOURCE_COMMIT', 'MOT_DEPLOYED_SHA', 'MOT_DEPLOY_DRIFT_DISABLE'];
+const ENV_KEYS = [
+  'SOURCE_COMMIT',
+  'MOT_DEPLOYED_SHA',
+  'MOT_DEPLOY_DRIFT_DISABLE',
+  'MOT_DEPLOY_DRIFT_ENABLE',
+];
 
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
