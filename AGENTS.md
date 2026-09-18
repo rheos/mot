@@ -50,6 +50,8 @@ Optional embedding, surfacing, and maintainer-worker settings are documented in 
 - `lib/validation.ts` owns the API boundary schemas.
 - `lib/mcp-tools.ts` exposes supported agent-facing tools.
 - `lib/conversation.ts`, `lib/digest.ts`, `lib/memory.ts`, `lib/graph.ts`, `lib/procedural.ts`, and `lib/topics.ts` make up the memory layer.
+- `lib/backup.ts` owns the scheduled jobs. Anything added there gets its own try/catch so one failing step cannot abort the rest.
+- `lib/alert-ticket.ts` is the shared self-monitoring alarm: a stable `source_ref` means a condition that persists for a week is one notification and one ticket whose `event_count` climbs, and the ticket closes itself on recovery. `lib/maintainer-health.ts` (worker failures) and `lib/deploy-drift.ts` (the running build is not the branch head) both ride it.
 
 ## Safety Rules
 

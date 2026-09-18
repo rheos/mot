@@ -6,16 +6,14 @@
 //
 // This module is the push side: after each worker runs in the nightly cron (lib/backup.ts),
 // reportWorkerHealth() files/updates a `critical` M.O.T. ticket when the worker came back
-// `ok:false`, and closes that ticket automatically once the worker recovers. Tickets dedup on a
-// stable per-worker source_ref (createTicket's existing dedup_key = source_ref + ticket_type), so a
-// worker failing every night for a week produces ONE Telegram page (on first failure) plus one
-// ticket whose event_count climbs — never a fresh page per night (lib/notify's sendTelegramNotify
-// only fires on ticket CREATE, not on a dedup update).
+// `ok:false`, and closes that ticket automatically once the worker recovers. The file/close
+// mechanics — one stable source_ref, one Telegram page, auto-close on recovery — now live in
+// lib/alert-ticket.ts so lib/deploy-drift.ts can share them; the contract is unchanged.
 //
 // Never throws: a ticket-filing failure must not take down the nightly cron. Every call site wraps
 // this in the same try/catch pattern already used for the workers themselves.
 
-import { createTicket, findOpenTicketBySourceRef, patchTicket } from './tickets';
+import { fileAlert, clearAlert } from './alert-ticket';
 
 export type MaintainerWorkerName = 'resolution' | 'dedup' | 'autoconfirm' | 'profile';
 
@@ -33,8 +31,6 @@ function sourceRefFor(worker: MaintainerWorkerName): string {
   return `maintainer:${worker}`;
 }
 
-const TICKET_TYPE = 'infra-alert';
-
 export function reportWorkerHealth(worker: MaintainerWorkerName, status: WorkerHealthStatus): void {
   try {
     const sourceRef = sourceRefFor(worker);
@@ -42,35 +38,18 @@ export function reportWorkerHealth(worker: MaintainerWorkerName, status: WorkerH
     if (!status.ok) {
       const batches =
         typeof status.batches_failed === 'number' ? ` (${status.batches_failed} batches failed)` : '';
-      createTicket({
-        title: `Maintainer worker "${worker}" is failing`,
-        ministry: 'works',
-        ticket_type: TICKET_TYPE,
+      fileAlert({
+        sourceRef,
         severity: 'critical',
-        provenance: 'status-poll',
-        source_ref: sourceRef,
+        title: `Maintainer worker "${worker}" is failing`,
         body: `The nightly ${worker} maintainer worker reported ok:false${batches}.\n\nError: ${status.error ?? '(none captured)'}\n\nCheck \`maintainer_status\` for the current run; see MOT's CLAUDE.local.md § Recallatron ops (maintainer) for the LLM provider seam (MAINTAINER_LLM_PROVIDER) this worker depends on.`,
-        private: false,
-        needs_review: false,
-        event_count: 1,
       });
       return;
     }
 
     // Recovered (or was already healthy). If a prior failure left an open alert ticket for this
     // worker, close it — the correction is "the next run succeeded", not a manual dismissal.
-    const existing = findOpenTicketBySourceRef(sourceRef, TICKET_TYPE);
-    if (existing) {
-      patchTicket(existing.id, {
-        status: 'done',
-      });
-      patchTicket(existing.id, {
-        add_comment: {
-          author: 'tuttle',
-          body: `Resolved — the ${worker} worker reported ok:true on the next run.`,
-        },
-      });
-    }
+    clearAlert(sourceRef, `Resolved — the ${worker} worker reported ok:true on the next run.`);
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error(`[MOT/maintainer-health] failed to report ${worker} health:`, e);

@@ -11,6 +11,7 @@ This repository is a public-safe view of a system in active use at [Novadiem Stu
 - Stores data locally in SQLite with Drizzle migrations, WAL mode, FTS5 search, and backup hooks
 - Exposes JSON-RPC tools so agents and automations can read and update tickets
 - Maintains a memory layer for conversation logs, session digests, an entity/procedural graph, and hybrid keyword/vector retrieval — see [docs/memory-architecture.md](docs/memory-architecture.md) for how it's put together
+- Monitors itself: scheduled jobs that fail, and a running build that has fallen behind its branch, raise a ticket instead of going unnoticed
 - Tests integration and end-to-end behavior against real SQLite databases
 
 ## Architecture
