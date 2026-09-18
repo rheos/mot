@@ -55,3 +55,36 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Build is not proof of boot. #32 shipped a `main` that compiled cleanly and then 500'd
+      # every request, because the Edge middleware bundle only fails when the runtime actually
+      # loads it. Typecheck/tests/build were green that whole time. So: start the built app and
+      # assert the two routes that matter — the healthcheck Coolify gates deploys on, and a
+      # middleware-gated route, which must redirect to /login rather than error.
+      - name: Boot smoke test
+        env:
+          DATABASE_URL: /tmp/smoke.db
+          MOT_SESSION_SECRET: ci-smoke-secret-long-enough-to-be-valid
+          MOT_EMBED_DISABLE: '1'
+        run: |
+          set -euo pipefail
+          npm start -- -p 3399 &
+          app_pid=$!
+          trap 'kill $app_pid 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' -m 4 http://127.0.0.1:3399/api/status || true)" = "200" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          health=$(curl -s -o /dev/null -w '%{http_code}' -m 10 http://127.0.0.1:3399/api/status)
+          gated=$(curl -s -o /dev/null -w '%{http_code}' -m 10 http://127.0.0.1:3399/)
+          echo "health=$health gated=$gated"
+
+          [ "$health" = "200" ] || { echo "::error::/api/status returned $health, expected 200"; exit 1; }
+          case "$gated" in
+            30*) ;;
+            *) echo "::error::/ returned $gated, expected a 3xx redirect to /login"; exit 1 ;;
+          esac
