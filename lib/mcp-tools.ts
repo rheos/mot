@@ -3,6 +3,7 @@ import { buildStatus } from './status';
 import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './validation';
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
 import type { RetrievalStats } from './rrf';
+import { logToolCall, countResults } from './tool-log';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory, searchActiveMemoryVector, searchActiveMemoryHybrid } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
@@ -672,7 +673,38 @@ export function listMcpTools(): ToolDef[] {
   ];
 }
 
+/**
+ * Dispatch one MCP tool call, recording what was asked for and what came back.
+ *
+ * The timing/logging wrapper lives here rather than in the route so EVERY caller of the tool
+ * surface is instrumented, and so the 30-plus cases below need no per-handler changes.
+ *
+ * Failure discipline: a tool that THROWS is still logged (ok=0) and the error is re-thrown
+ * unchanged, so the route's own error handling is untouched. A failure in the logging itself is
+ * swallowed inside logToolCall — instrumentation must never be able to break a reply.
+ */
 export async function callMcpTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolContent> {
+  const started = Date.now();
+  try {
+    const content = await dispatchMcpTool(name, args);
+    logToolCall({
+      tool: name,
+      args,
+      durationMs: Date.now() - started,
+      ok: true,
+      resultCount: countResults(content),
+    });
+    return content;
+  } catch (err) {
+    logToolCall({ tool: name, args, durationMs: Date.now() - started, ok: false });
+    throw err;
+  }
+}
+
+async function dispatchMcpTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolContent> {

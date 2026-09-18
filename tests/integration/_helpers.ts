@@ -31,6 +31,9 @@ export function setupTempDb(label: string): string {
   // vec_meta: needed even without the vec tables, because vecDelete (memory supersede,
   // graph-compact) deletes its sidecar row unconditionally.
   seed.exec(fs.readFileSync(path.join(migrationsFolder, '0010_embed_version.sql'), 'utf8'));
+  // tool_call_log: callMcpTool writes one row per dispatch (logging is fail-soft, but an
+  // absent table would make every MCP test emit a swallowed-error line).
+  seed.exec(fs.readFileSync(path.join(migrationsFolder, '0011_tool_call_log.sql'), 'utf8'));
   seed.close();
 
   process.env.DATABASE_URL = dbPath;
