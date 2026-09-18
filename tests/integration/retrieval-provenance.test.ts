@@ -58,6 +58,19 @@ describe('retrieval provenance', () => {
     expect(stats.fts_count).toBeGreaterThan(0);
   });
 
+  it('always reports semantic availability as a BOOLEAN, never undefined', async () => {
+    // Regression guard for a bug this file originally missed: semantic_available was only ever
+    // assigned on the failure paths, so the healthy case left it undefined and JSON dropped it.
+    // A caller then could not tell "semantic ran fine" from "nothing reported" — the precise
+    // ambiguity the field exists to remove. The suite runs with embedding disabled, so this
+    // asserts the TYPE rather than the value; vec-retrieval covers the true path with it on.
+    for (const m of ['hybrid', 'vector'] as const) {
+      const stats = { mode: m } as Stats;
+      await searchTurns('contabo', 'p1', 10, m, stats);
+      expect(typeof stats.semantic_available).toBe('boolean');
+    }
+  });
+
   it('does not require a stats object — every existing caller is unaffected', () => {
     expect(() => searchTurns('contabo', 'p1', 10)).not.toThrow();
   });

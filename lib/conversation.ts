@@ -177,6 +177,15 @@ export function searchTurns(
   //   - hybrid → the plain fts-arm list whenever the vector arm degrades or has no hits
   //     (FTS-fallback, NOT []); [] with a log line only if the fts arm ITSELF throws.
   return (async (): Promise<Turn[]> => {
+    if (stats) {
+      stats.mode = mode;
+      // Optimistic, then flipped to false below if the arm cannot run or throws. Set HERE rather
+      // than only on the failure paths: leaving it undefined in the healthy case means a caller
+      // cannot distinguish "semantic ran fine" from "nothing reported", which is the exact
+      // ambiguity this field exists to remove. It must always be a boolean after a hybrid or
+      // vector call.
+      stats.semantic_available = true;
+    }
     // ── Vector arm ──
     // Over-fetch for fusion (issue #40): both arms gather more than the caller asked for, so RRF
     // can see rows BOTH arms ranked. Truncation back to `limit` happens after the merge. On the
