@@ -14,6 +14,12 @@ const HEAD = '81751bdfa3a2a386037356b3a9057fb10284926b';
 const OLD = 'd142be6c0c0ffee0c0ffee0c0ffee0c0ffee0c0f';
 const LONG_AGO = '2026-09-01T00:00:00Z';
 
+// fileAlert pages on a new incident (#39). Mock the transport so this suite asserts ticket
+// behaviour without attempting a real send.
+vi.mock('../../lib/notify', () => ({
+  sendTelegramNotify: vi.fn(async (_text: string) => {}),
+}));
+
 const dbPath = setupTempDb('deploy-drift-alerting');
 const { runDeployDriftCheck } = await import('../../lib/deploy-drift');
 const { listTickets, getTicket, patchTicket } = await import('../../lib/tickets');
