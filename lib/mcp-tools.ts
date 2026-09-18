@@ -1,7 +1,7 @@
 import { listTickets, getTicket, createTicket, patchTicket, type ListOpts } from './tickets';
 import { buildStatus } from './status';
 import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './validation';
-import { logTurn, getRecentTurns, searchTurns } from './conversation';
+import { logTurn, getRecentTurns, searchTurns, readSession, TurnNotInSessionError } from './conversation';
 import type { RetrievalStats } from './rrf';
 import { logToolCall, countResults } from './tool-log';
 import { structuralDigest } from './digest';
@@ -248,6 +248,29 @@ export function listMcpTools(): ToolDef[] {
           n:       { type: 'integer', minimum: 1, maximum: 50, description: 'Number of turns. Default 12.' },
         },
         required: ['chat_id'],
+      },
+    },
+    {
+      name: 'chat_session',
+      description:
+        'Read one page of a conversation by session_id. This is the READ half of search: ' +
+        'chat_search hands back a turn and the session it came from, and this follows that ' +
+        'pointer. Pass around_turn_id (the `id` of a search hit) to open ON that turn with ' +
+        'context either side, instead of paging from the top of a conversation to reach ' +
+        'something already located. Windows are bounded on purpose — reading around a match is ' +
+        'how you avoid replaying a whole transcript into context. Reports total and has_more so ' +
+        'you can decide whether to continue rather than guess. Same caveat as chat_search: these ' +
+        'are transcripts, recording what was believed at the time.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session_id:      { type: 'string', description: 'Session to read, e.g. from a chat_search hit.' },
+          around_turn_id:  { type: 'integer', description: 'Center the window on this turn id. Errors if the turn is not in this session.' },
+          context:         { type: 'integer', minimum: 0, maximum: 10, description: 'Turns either side when centering (default 3, max 10).' },
+          offset:          { type: 'integer', minimum: 0, description: 'Paging offset when not centering.' },
+          limit:           { type: 'integer', minimum: 1, maximum: 50, description: 'Turns per page (default 20, max 50).' },
+        },
+        required: ['session_id'],
       },
     },
     {
@@ -804,6 +827,28 @@ async function dispatchMcpTool(
       // to trust what it got, and a degraded hybrid answer is indistinguishable from a healthy one
       // without this. See lib/rrf.ts RetrievalStats.
       return text({ retrieval, results });
+    }
+
+    case 'chat_session': {
+      try {
+        return text(
+          readSession(args.session_id as string, {
+            aroundTurnId: args.around_turn_id as number | undefined,
+            context: args.context as number | undefined,
+            offset: args.offset as number | undefined,
+            limit: args.limit as number | undefined,
+          }),
+        );
+      } catch (err) {
+        // A turn that is not in the named session is a caller error, returned as structured data
+        // like the other Track-2/3 tools rather than thrown. Surfacing it matters: silently
+        // returning the head of the session would hand back plausible content for a wrong
+        // reference, which is the failure this layer exists to prevent.
+        if (err instanceof TurnNotInSessionError) {
+          return text({ error: 'turn_not_in_session', turn_id: err.turnId, session_id: err.sessionId });
+        }
+        throw err;
+      }
     }
 
     case 'summarize_and_archive': {

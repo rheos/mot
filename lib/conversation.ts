@@ -106,6 +106,98 @@ export function getTurnsForSession(sessionId: string): Turn[] {
     .all(sessionId) as Turn[];
 }
 
+/** One page of a session, with enough context for a caller to know where it is. */
+export interface SessionPage {
+  session_id: string;
+  /** Turns in the whole session, regardless of what this page shows. */
+  total: number;
+  /** 1-indexed inclusive position range of `turns` within the session. [0, 0] when empty. */
+  showing: [number, number];
+  /** True when turns exist after this page. */
+  has_more: boolean;
+  /** Position of `around_turn_id` within the session, when centering was requested. */
+  target_position?: number;
+  turns: Turn[];
+}
+
+/** Max turns one call may return. The scarce resource being protected is the caller's context. */
+const SESSION_PAGE_MAX = 50;
+/** Max turns of context either side when centering on a matched turn. */
+const SESSION_CONTEXT_MAX = 10;
+
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
+
+/**
+ * Read one page of a session, optionally centered on a specific turn (issue #50).
+ *
+ * This is the "read the match" half of search-returns-pointers. `chat_search` hands back a turn
+ * and the session it came from; without this, that is a dead end — the caller sees the matching
+ * line and nothing said around it.
+ *
+ * Centering is the expected path: pass the `id` of a search hit as `aroundTurnId` and get that
+ * turn plus bounded context either side, rather than paging from the top of a conversation to
+ * find something already located.
+ *
+ * Bounded on purpose. An unbounded session read would let one call consume a context window, and
+ * the reason to read around a match rather than replay a transcript is precisely to avoid that.
+ */
+export function readSession(
+  sessionId: string,
+  opts?: { aroundTurnId?: number; context?: number; offset?: number; limit?: number },
+): SessionPage {
+  const all = getTurnsForSession(sessionId);
+  const empty: SessionPage = {
+    session_id: sessionId,
+    total: all.length,
+    showing: [0, 0],
+    has_more: false,
+    turns: [],
+  };
+  // Unknown session: an empty page, not an error. "No such conversation" is an answer.
+  if (all.length === 0) return empty;
+
+  if (opts?.aroundTurnId !== undefined) {
+    const idx = all.findIndex((t) => t.id === opts.aroundTurnId);
+    // A turn that is not in THIS session is a caller error worth surfacing. Silently returning
+    // the head of the session would hand back plausible-looking content for a wrong reference,
+    // which is the failure mode this whole layer exists to avoid.
+    if (idx === -1) {
+      throw new TurnNotInSessionError(opts.aroundTurnId, sessionId);
+    }
+    const ctx = clamp(opts.context ?? 3, 0, SESSION_CONTEXT_MAX);
+    const start = Math.max(0, idx - ctx);
+    const end = Math.min(all.length, idx + ctx + 1);
+    return {
+      session_id: sessionId,
+      total: all.length,
+      showing: [start + 1, end],
+      has_more: end < all.length,
+      target_position: idx + 1,
+      turns: all.slice(start, end),
+    };
+  }
+
+  const limit = clamp(opts?.limit ?? 20, 1, SESSION_PAGE_MAX);
+  const offset = Math.max(0, opts?.offset ?? 0);
+  if (offset >= all.length) return { ...empty, showing: [0, 0] };
+  const end = Math.min(all.length, offset + limit);
+  return {
+    session_id: sessionId,
+    total: all.length,
+    showing: [offset + 1, end],
+    has_more: end < all.length,
+    turns: all.slice(offset, end),
+  };
+}
+
+/** Thrown when `aroundTurnId` names a turn that is not part of the requested session. */
+export class TurnNotInSessionError extends Error {
+  constructor(public readonly turnId: number, public readonly sessionId: string) {
+    super(`turn ${turnId} is not in session ${sessionId}`);
+    this.name = 'TurnNotInSessionError';
+  }
+}
+
 // Sync overload — existing ≤3-arg call sites bind here, return type is Turn[] (unchanged).
 export function searchTurns(
   q: string,
