@@ -18,23 +18,33 @@ export interface Turn {
 function resolveSessionId(
   chatId: string,
   now: Date,
-): { sessionId: string; closedSessionId: string | null } {
+): { sessionId: string; closedSessionId: string | null; prevContent: string | null } {
   const db = getDb();
+  // `content` rides along on a query this function already makes, so adjacency enrichment adds
+  // NO read to the logTurn hot path (the inline-embed p95 budget is ~300ms before EMBED_INLINE
+  // is worth flipping — see CLAUDE.local.md).
   const last = db
-    .prepare(`SELECT ts, session_id FROM conversation WHERE chat_id = ? ORDER BY id DESC LIMIT 1`)
-    .get(chatId) as { ts: string; session_id: string } | undefined;
+    .prepare(
+      `SELECT ts, session_id, content FROM conversation WHERE chat_id = ? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(chatId) as { ts: string; session_id: string; content: string } | undefined;
 
   if (!last) {
-    return { sessionId: now.toISOString().slice(0, 10), closedSessionId: null }; // first turn
+    // First turn ever for this chat: nothing precedes it.
+    return { sessionId: now.toISOString().slice(0, 10), closedSessionId: null, prevContent: null };
   }
   const gap = now.getTime() - new Date(last.ts).getTime();
   if (gap > SESSION_GAP_MS) {
     return {
       sessionId: now.toISOString().slice(0, 16).replace('T', '-'), // new session: "YYYY-MM-DD-HH:MM"
       closedSessionId: last.session_id, // load-bearing for bot.py auto-trigger
+      // Session boundary: the previous turn is >2h old and about a different thing. Enriching
+      // across it would pull unrelated context into this turn's vector, which is worse than
+      // leaving a short turn bare.
+      prevContent: null,
     };
   }
-  return { sessionId: last.session_id, closedSessionId: null };
+  return { sessionId: last.session_id, closedSessionId: null, prevContent: last.content };
 }
 
 // LogTurnResult extends Turn with the boundary signal. The bot reads
@@ -46,7 +56,7 @@ export interface LogTurnResult extends Turn {
 export function logTurn(chatId: string, role: 'user' | 'rheo', content: string): LogTurnResult {
   const db = getDb();
   const now = new Date();
-  const { sessionId, closedSessionId } = resolveSessionId(chatId, now);
+  const { sessionId, closedSessionId, prevContent } = resolveSessionId(chatId, now);
   const ts = now.toISOString();
 
   const stmt = db.prepare(
@@ -58,7 +68,9 @@ export function logTurn(chatId: string, role: 'user' | 'rheo', content: string):
   // fails the turn write. EMBED_INLINE=false defers embedding to the digest close
   // (deferred sweep in upsertDigest) — FR 4 / EC 7.
   if (process.env.EMBED_INLINE !== 'false') {
-    indexAsync(getDb(), 'conversation_vec', result.lastInsertRowid as number, content);
+    indexAsync(getDb(), 'conversation_vec', result.lastInsertRowid as number, content, {
+      prevText: prevContent,
+    });
   }
 
   return {

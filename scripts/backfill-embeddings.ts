@@ -7,7 +7,8 @@
 //   npx tsx scripts/backfill-embeddings.ts [--dry-run] [--concurrency N]
 //
 // IDEMPOTENCY IS THIS SCRIPT'S JOB (AC 8): the skip-set for each store is the set of source
-// ids ALREADY present in the matching vec table. A row already embedded is skipped, so a
+// ids already present in the matching vec table AND stamped at the current EMBED_VERSION. A row
+// embedded under an older representation is RE-embedded (counted as restale), so a
 // re-run over a fully-embedded DB is a no-op (0 embedded, 0 errored). Correctness rides on the
 // vec tables' PRIMARY KEY: conversation_vec.turn_id / memory_items_vec.item_id (INTEGER) and
 // entity_vec.entity_id / session_digest_vec.session_id (TEXT).
@@ -19,7 +20,8 @@
 import path from 'node:path';
 import { getDb, migrate_db } from '../db/client';
 import { embed, embeddingEnabled, embedderAvailable } from '../lib/embedding';
-import { vecInsert, vecReplace, vecAvailable } from '../lib/vec';
+import { vecStaleIds, vecReplace, vecAvailable } from '../lib/vec';
+import { buildEmbedText } from '../lib/embed-input';
 import { loadGraph } from '../lib/graph';
 import type Database from 'better-sqlite3';
 
@@ -72,7 +74,8 @@ export interface StoreItem {
 
 export interface StoreCounts {
   total: number; // qualifying rows for the store
-  skip: number; // already present in the vec table (skip-set hits)
+  skip: number; // already present AND at the current EMBED_VERSION
+  restale: number; // present but stored under an older representation -> re-embedded this run
   embedded: number; // rows embedded + written this run (dry-run: rows that WOULD embed)
   errored: number; // embed/write failures (never fatal — logged, counted, run continues)
 }
@@ -104,12 +107,21 @@ export function storeSpecs(): StoreSpec[] {
     {
       label: 'conversation_vec',
       idCol: 'turn_id',
-      items: () =>
-        (getDb().prepare('SELECT id, content FROM conversation').all() as {
-          id: number;
-          content: string;
-        }[]).map((r) => ({ id: r.id, text: r.content })),
-      write: (db, id, f32) => vecInsert(db, 'conversation_vec', id, f32),
+      // Adjacency-enriched, exactly as indexAsync and the deferred digest sweep do it. If this
+      // spec embedded bare content while the live paths enriched, the backfill would stamp
+      // EMBED_VERSION on a representation-1 vector and the mismatch would be undetectable.
+      // Ordered by (session_id, id) so each turn's predecessor is its previous row IN SESSION;
+      // the first turn of a session embeds bare, matching logTurn's behaviour at a boundary.
+      items: () => {
+        const rows = getDb()
+          .prepare('SELECT id, content, session_id FROM conversation ORDER BY session_id, id')
+          .all() as { id: number; content: string; session_id: string }[];
+        return rows.map((r, i) => {
+          const prev = i > 0 && rows[i - 1].session_id === r.session_id ? rows[i - 1].content : null;
+          return { id: r.id, text: buildEmbedText(r.content, prev) };
+        });
+      },
+      write: (db, id, f32) => vecReplace(db, 'conversation_vec', id, f32),
     },
     // Store 2: memory_items — active rows only; embed label + reason.
     {
@@ -122,7 +134,7 @@ export function storeSpecs(): StoreSpec[] {
           id: r.id,
           text: r.label + ' ' + r.reason,
         })),
-      write: (db, id, f32) => vecInsert(db, 'memory_items_vec', id, f32),
+      write: (db, id, f32) => vecReplace(db, 'memory_items_vec', id, f32),
     },
     // Store 3: session_digest — every digest; embed the summary. vecReplace (INSERT OR REPLACE
     // semantics) keeps re-digest consistency (FR 8 / EC 5); harmless here since the skip-set
@@ -149,7 +161,7 @@ export function storeSpecs(): StoreSpec[] {
             id: e.id,
             text: e.label + ' ' + JSON.stringify(e.properties),
           })),
-      write: (db, id, f32) => vecInsert(db, 'entity_vec', id, f32),
+      write: (db, id, f32) => vecReplace(db, 'entity_vec', id, f32),
     },
   ];
 }
@@ -163,12 +175,18 @@ export async function processStore(
   opts: { dryRun: boolean; concurrency: number },
 ): Promise<StoreCounts> {
   const items = spec.items();
-  const skipSet = vecIdSet(db, spec.label, spec.idCol);
-  const pending = items.filter((it) => !skipSet.has(it.id));
+  const present = vecIdSet(db, spec.label, spec.idCol);
+  // Stale = stored under an older embed-input representation, INCLUDING every row written before
+  // vec_meta existed (absent metadata reads as version 1). Those must be re-embedded, not skipped,
+  // or a representation change would never actually propagate. Every write is vecReplace, so
+  // re-embedding an existing row is safe; the script stays idempotent on a second run.
+  const stale = vecStaleIds(db, spec.label);
+  const pending = items.filter((it) => !present.has(it.id) || stale.has(String(it.id)));
 
   const counts: StoreCounts = {
     total: items.length,
     skip: items.length - pending.length,
+    restale: items.filter((it) => present.has(it.id) && stale.has(String(it.id))).length,
     embedded: 0,
     errored: 0,
   };
@@ -212,7 +230,7 @@ export async function runBackfillEmbeddings(opts: {
     const counts = await processStore(db, spec, opts);
     report[spec.label] = counts;
     console.log(
-      `${spec.label.padEnd(18)}: total=${counts.total} skip=${counts.skip} ` +
+      `${spec.label.padEnd(18)}: total=${counts.total} skip=${counts.skip} restale=${counts.restale} ` +
         `embedded=${counts.embedded} errored=${counts.errored}`,
     );
   }

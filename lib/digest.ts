@@ -2,6 +2,7 @@ import { getDb } from '../db/client';
 import { nowIso } from './time';
 import { getTurnsForSession } from './conversation';
 import { vecReplace, vecInsert, vecAvailable } from './vec';
+import { buildEmbedText } from './embed-input';
 import { embed, embeddingEnabled } from './embedding';
 
 export interface DigestPayload {
@@ -89,10 +90,16 @@ export function upsertDigest(payload: DigestPayload): DigestRow {
           .map((r) => r.turn_id)
       );
       const unembedded = sessionTurns.filter((t) => !embeddedIds.has(t.id));
+      // Adjacency context by position within THIS session (getTurnsForSession is chronological),
+      // so the deferred sweep produces byte-identical embed input to the inline path. Index 0 has
+      // no in-session predecessor and embeds bare, exactly as logTurn does at a boundary.
+      const prevById = new Map<number, string | null>(
+        sessionTurns.map((t, i) => [t.id, i === 0 ? null : sessionTurns[i - 1].content]),
+      );
       // Fire-and-forget embed for each unembedded turn.
       void Promise.allSettled(
         unembedded.map((t) =>
-          embed(t.content)
+          embed(buildEmbedText(t.content, prevById.get(t.id) ?? null))
             .then((f32) => vecInsert(db, 'conversation_vec', t.id, f32))
             .catch((err) => console.error('[MOT/vec] deferred sweep error:', err))
         )

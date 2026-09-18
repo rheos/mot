@@ -5,6 +5,7 @@
 import type Database from 'better-sqlite3';
 import { getLoadablePath } from 'sqlite-vec';
 import { embed, embeddingEnabled } from './embedding';
+import { EMBED_VERSION, IMPLICIT_EMBED_VERSION, buildEmbedText } from './embed-input';
 
 type DB = Database.Database;
 
@@ -51,25 +52,87 @@ export function f32ToBlob(f32: Float32Array): Buffer {
   return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength);
 }
 
-export function vecInsert(db: DB, table: string, id: number | string, f32: Float32Array): void {
+export function vecInsert(
+  db: DB,
+  table: string,
+  id: number | string,
+  f32: Float32Array,
+  embedVersion: number = EMBED_VERSION,
+): void {
   // vec0 INTEGER-PK bind trap: a plain JS number fails with "Only integers are allows for
   // primary key values". Coerce numbers to BigInt; TEXT-PK strings bind fine as-is.
   const key = typeof id === 'number' ? BigInt(id) : id;
-  db.prepare(`INSERT INTO ${table}(${idColForTable(table)}, embedding) VALUES (?, ?)`).run(
-    key,
-    f32ToBlob(f32),
-  );
+  // One transaction: a vector without its version stamp reads as representation 1 and would be
+  // re-embedded forever; a stamp without its vector is a phantom the coverage query counts.
+  db.transaction(() => {
+    db.prepare(`INSERT INTO ${table}(${idColForTable(table)}, embedding) VALUES (?, ?)`).run(
+      key,
+      f32ToBlob(f32),
+    );
+    vecMetaSet(db, table, id, embedVersion);
+  })();
 }
 
-export function vecReplace(db: DB, table: string, id: number | string, f32: Float32Array): void {
+// row_id is TEXT so one table serves both the INTEGER-PK and TEXT-PK vec stores. Always go
+// through String(id) on read AND write — a number key written as 7 and read back as '7' would
+// silently miss.
+export function vecMetaSet(
+  db: DB,
+  table: string,
+  id: number | string,
+  embedVersion: number,
+): void {
+  db.prepare(
+    `INSERT INTO vec_meta(table_name, row_id, embed_version) VALUES (?, ?, ?)
+     ON CONFLICT(table_name, row_id) DO UPDATE SET embed_version = excluded.embed_version`,
+  ).run(table, String(id), embedVersion);
+}
+
+/**
+ * Row ids in `table` whose stored representation is not the current EMBED_VERSION, including
+ * every row with no vec_meta entry at all (those predate the stamp — see 0010).
+ */
+export function vecStaleIds(db: DB, table: string): Set<string> {
+  const rows = db
+    .prepare(
+      `SELECT CAST(v.${idColForTable(table)} AS TEXT) AS id
+         FROM ${table} v
+         LEFT JOIN vec_meta m ON m.table_name = ? AND m.row_id = CAST(v.${idColForTable(table)} AS TEXT)
+        WHERE COALESCE(m.embed_version, ?) != ?`,
+    )
+    .all(table, IMPLICIT_EMBED_VERSION, EMBED_VERSION) as { id: string }[];
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Fraction of `table`'s vectors already at the current EMBED_VERSION, 0..1. An empty table is 1
+ * (nothing to migrate), so a fresh install never looks like it is mid-migration.
+ */
+export function embedCoverage(db: DB, table: string): number {
+  const total = (db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+  if (total === 0) return 1;
+  return (total - vecStaleIds(db, table).size) / total;
+}
+
+export function vecReplace(
+  db: DB,
+  table: string,
+  id: number | string,
+  f32: Float32Array,
+  embedVersion: number = EMBED_VERSION,
+): void {
   // DELETE-then-INSERT (portable across sqlite-vec versions; handles the re-digest EC 5 /
-  // FR 8 case). DELETE-by-id accepts a plain number, so no coercion here.
+  // FR 8 case). DELETE-by-id accepts a plain number, so no coercion here. vecInsert stamps
+  // vec_meta via upsert, so the old row's stale version cannot survive the replace.
   db.prepare(`DELETE FROM ${table} WHERE ${idColForTable(table)} = ?`).run(id);
-  vecInsert(db, table, id, f32);
+  vecInsert(db, table, id, f32, embedVersion);
 }
 
 export function vecDelete(db: DB, table: string, id: number | string): void {
-  db.prepare(`DELETE FROM ${table} WHERE ${idColForTable(table)} = ?`).run(id);
+  db.transaction(() => {
+    db.prepare(`DELETE FROM ${table} WHERE ${idColForTable(table)} = ?`).run(id);
+    db.prepare(`DELETE FROM vec_meta WHERE table_name = ? AND row_id = ?`).run(table, String(id));
+  })();
 }
 
 export function vecKnn(
@@ -88,11 +151,20 @@ export function vecKnn(
     .all(f32ToBlob(queryF32), k) as { id: number | string; distance: number }[];
 }
 
-export function indexAsync(db: DB, table: string, id: number | string, text: string): void {
+export function indexAsync(
+  db: DB,
+  table: string,
+  id: number | string,
+  text: string,
+  opts?: { prevText?: string | null },
+): void {
   // Fire-and-forget: start a Promise, never await it. The embeddingEnabled() gate is the
   // single choke point that disables all four write paths during testing (W1).
   if (!embeddingEnabled()) return;
-  embed(text)
+  // buildEmbedText is applied HERE, at the one choke point every write path funnels through,
+  // so the stored/FTS text and the embedded text can never drift apart per-caller. Callers with
+  // no adjacency context (entities, digests, memory items) pass nothing and embed bare.
+  embed(buildEmbedText(text, opts?.prevText ?? null))
     .then((f32) => vecInsert(db, table, id, f32))
     .catch((err) => console.error('[MOT/vec] indexAsync error:', err));
 }
