@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { setupTempDb, cleanupTempDb } from './_helpers';
 
 // Nightly maintainer failure monitoring (lib/maintainer-health.ts). This is the "arguably more
@@ -8,6 +8,12 @@ import { setupTempDb, cleanupTempDb } from './_helpers';
 // uses for external alerts (ViralVision's disk-guardrail, the Gmail intake routine), so a worker
 // failing every night for weeks produces exactly ONE Telegram page (ticket CREATE) plus one ticket
 // whose event_count climbs on every repeat failure — never a fresh page per night.
+
+// fileAlert pages on a new incident (#39). Mock the transport so this suite asserts ticket
+// behaviour without attempting a real send.
+vi.mock('../../lib/notify', () => ({
+  sendTelegramNotify: vi.fn(async (_text: string) => {}),
+}));
 
 const dbPath = setupTempDb('maintainer-health');
 const { reportWorkerHealth } = await import('../../lib/maintainer-health');
