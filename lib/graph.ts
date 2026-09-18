@@ -15,7 +15,7 @@ import { nowIso } from './time';
 import { getDb } from '../db/client';
 import { indexAsync, vecKnn, vecAvailable } from './vec';
 import { embed, embeddingEnabled } from './embedding';
-import { rrfMerge } from './rrf';
+import { rrfMergeScored, scoreGapCutoff, FUSION_FETCH_MULTIPLIER } from './rrf';
 
 export interface EntityRecord {
   id: string;
@@ -702,6 +702,12 @@ export function searchEntities(
   //     arm degrades or has no hits (FTS-fallback, NOT []); [] with a log line only if
   //     the fts arm ITSELF throws.
   return (async (): Promise<EntityRecord[]> => {
+    // Over-fetch for fusion (issue #40). The fts arm here is already uncapped, so only the
+    // vector arm needed widening: it was cut to ENTITY_SEARCH_LIMIT before the merge, which hid
+    // every agreement below rank 50. 150 stays under the KNN k of 200 computed below.
+    const fuseLimit =
+      mode === 'hybrid' ? ENTITY_SEARCH_LIMIT * FUSION_FETCH_MULTIPLIER : ENTITY_SEARCH_LIMIT;
+
     // ── Vector arm ──
     let vectorHits: EntityRecord[] = [];
     if (q.trim() !== '' && vecAvailable() && embeddingEnabled()) {
@@ -727,7 +733,7 @@ export function searchEntities(
               }
               return e.superseded_by === null && e.valid_until === null;
             })
-            .slice(0, ENTITY_SEARCH_LIMIT);
+            .slice(0, fuseLimit);
         }
       } catch (err) {
         console.error('[MOT/graph] searchEntities vector arm degraded to []:', err);
@@ -750,8 +756,11 @@ export function searchEntities(
     // to the entity path's one limit (the sync arm is uncapped; hybrid output is bounded).
     if (vectorHits.length === 0) return ftsResults.slice(0, ENTITY_SEARCH_LIMIT);
 
-    // Both arms live: merge via RRF (FR 14).
-    return rrfMerge<EntityRecord>([ftsResults, vectorHits], { limit: ENTITY_SEARCH_LIMIT });
+    // Both arms live: merge via RRF (FR 14), then cut at the score cliff if there is one.
+    const scored = rrfMergeScored<EntityRecord>([ftsResults, vectorHits], {
+      limit: ENTITY_SEARCH_LIMIT,
+    });
+    return scoreGapCutoff(scored).map((e) => e.item);
   })();
 }
 

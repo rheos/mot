@@ -91,3 +91,27 @@ Ship the fetch multiplier alone. It is the smallest change, it has the clearest 
 requires no new parameters or constants. Measure whether merged results actually change before
 touching anything else; if fusion output is identical with 3x over-fetch, the other two are not
 worth the risk either.
+
+## Outcome (2026-09-18, issue #40 / partially built)
+
+**Shipped: the fetch multiplier.** Each arm now gathers `limit * 3` before fusion and the merge
+truncates back. This was the change with the clearest argument and it turned out to be closer to a
+latent bug than a tuning knob: both arms were cut to the output size, so a row ranked 25th by both
+appeared in neither list and the agreement RRF exists to reward was structurally invisible. A unit
+test asserts the consensus row is found only with the wider fetch.
+
+Worth noting the vector arm already over-fetched at the KNN level (`k = min(limit * 4, 256)`), but
+that headroom was consumed by the post-KNN `chat_id` filter and then truncated before the merge, so
+none of it ever reached fusion. The graph path had the same shape with its own limit.
+
+**Shipped: the position on recency, as a comment rather than code.** M.O.T. applies none and now
+says why in `lib/rrf.ts`: a ranking that systematically demotes old rows is a soft form of the decay
+the memory design rejects. The fact is not deleted, it just stops being findable, which is the same
+user-visible outcome for a worse reason. If a per-query option is ever added it must default off.
+
+**NOT shipped: the semantic-discovery boost.** Deliberate. 1.05 is a magic constant with no
+derivation, its failure mode (floating vector noise above solid keyword matches) is subtle, and this
+would have been the third change to retrieval ranking in a single day, after embed enrichment and
+the FTS query rewrite. Compounding unmeasured changes is how a regression becomes unattributable.
+The argument for it is still good; it needs a measurement, not a merge.
+

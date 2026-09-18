@@ -8,7 +8,7 @@ import { nowIso } from './time';
 import { ftsQuery } from './fts';
 import { indexAsync, vecDelete, vecAvailable, vecKnn } from './vec';
 import { embeddingEnabled, embed } from './embedding';
-import { rrfMerge } from './rrf';
+import { rrfMergeScored, scoreGapCutoff, FUSION_FETCH_MULTIPLIER } from './rrf';
 
 export type MemoryType = 'fact' | 'preference' | 'deadline' | 'person';
 
@@ -383,22 +383,30 @@ export async function searchActiveMemoryHybrid(
   chatId?: string,
   limit = 20,
 ): Promise<MemoryRow[]> {
+  // Over-fetch for fusion (issue #40): RRF can only reward agreement it can see, so both arms
+  // gather more than the caller asked for and the merge truncates back to `limit`.
+  const fuseLimit = limit * FUSION_FETCH_MULTIPLIER;
+
   // ── FTS arm under its own guard ──
   let ftsResults: MemoryRow[];
   try {
     ftsResults =
-      q.trim() !== '' ? searchActiveMemory(q, chatId, limit) : getActiveMemory(chatId, limit);
+      q.trim() !== ''
+        ? searchActiveMemory(q, chatId, fuseLimit)
+        : getActiveMemory(chatId, fuseLimit);
   } catch (err) {
     console.error('[MOT/memory] searchActiveMemoryHybrid fts arm degraded to []:', err);
     return [];
   }
 
   // ── Vector arm (never rejects; [] on any degrade) ──
-  const vectorResults = await searchActiveMemoryVector(q, chatId, limit);
+  const vectorResults = await searchActiveMemoryVector(q, chatId, fuseLimit);
 
-  // FTS-fallback: a degraded/empty vector arm yields exactly the fts-arm result.
-  if (vectorResults.length === 0) return ftsResults;
+  // FTS-fallback: a degraded/empty vector arm yields exactly the fts-arm result, sliced back
+  // to what the caller asked for (the arm was over-fetched for fusion that is not happening).
+  if (vectorResults.length === 0) return ftsResults.slice(0, limit);
 
-  // Both arms live: merge via RRF (FR 14).
-  return rrfMerge<MemoryRow>([ftsResults, vectorResults], { limit });
+  // Both arms live: merge via RRF (FR 14), then cut at the score cliff if there is one.
+  const scored = rrfMergeScored<MemoryRow>([ftsResults, vectorResults], { limit });
+  return scoreGapCutoff(scored).map((e) => e.item);
 }
