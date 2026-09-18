@@ -58,6 +58,50 @@ Recallatron product-level:
 - [code-provenance-blame-idea.md](code-provenance-blame-idea.md): from a line of code back to the
   conversation that produced it. Hardest to build, sharpest positioning.
 
+**From the EverAlgo review (2026-09-18)**
+
+[EverAlgo](https://github.com/EverMind-AI/EverAlgo) (Apache 2.0, EverMind-AI) is the algorithm
+library behind EverOS: business-stateless, persistence-free, extraction and ranking only. Where
+crispy-recall covers the verbatim half, this covers the structured half, the layer M.O.T. had no
+reference implementation for.
+
+Read under the decision recorded in rheo.stream's 1a card: **build the product, borrow the
+algorithms, attribute properly.** Same method as the crispy-recall pass: port techniques, not
+constants, and measure against the real corpus before adopting any number.
+
+- [everalgo-staged-dedup-idea.md](everalgo-staged-dedup-idea.md): the highest-value item. Hand
+  the dedup model a ranked vector neighbourhood instead of an insertion-order chunk, and skip it
+  only where a measurement says skipping is safe. The OOM that motivated the first draft was on
+  the retired Lightsail box; the live reasons are a ~9-minute nightly app outage, the OpenRouter
+  bill, and a chunking blind spot that the code comments say never heals.
+- [everalgo-agentic-retrieval-idea.md](everalgo-agentic-retrieval-idea.md): a sufficiency check
+  and query expansion. Two failure classes, not one: the relevance floor detects "nothing near"
+  for free; only a model can detect "near but not the answer". EverAlgo has the second and does
+  nothing on an empty first round, so the two are not the same loop at different prices.
+- [everalgo-boundary-detection-idea.md](everalgo-boundary-detection-idea.md): session boundaries
+  as a judgement that can be *deferred*. The contrast in the title is softer than it reads (their
+  top-priority rule is a calendar-date split), and the measurement that decides it is a gap
+  histogram, not a vector comparison.
+- [everalgo-fusion-comparison-idea.md](everalgo-fusion-comparison-idea.md): mostly reassurance.
+  Their RRF is identical to ours, formula and default `k`. Their `lr` ships three fitted constants
+  and no learner, and their `score_propagation` is a parent-to-child blend with no caller. Records
+  that `lib/rrf.ts` is not provisional.
+
+**Not yet read.** The review covered `everalgo-clustering`, `everalgo-rank` and
+`everalgo-boundary`. Four packages were not studied: `everalgo-user-memory` (Episode / Foresight /
+AtomicFact / Profile extractors, 4,184 LOC), `everalgo-agent-memory` (AgentCase / AgentSkill /
+AgentProfile, 3,122), `everalgo-knowledge` (2,090) and `everalgo-parser` (1,632). Counts are `.py`
+under each package's `src/`. The extractors in particular map onto M.O.T.'s digest, entity
+extraction and procedural notes, and are the obvious next read.
+
+A quick look during the review pass, not a read, found three things worth knowing before that
+read: `everalgo-knowledge/_batch_merge.py` handles duplicates that straddle a batch split with a
+second LLM pass over the flattened outputs, which is the other cure for the dedup blind spot above;
+the user-memory extractors carry no confidence gate (the only mention of `confidence` in
+`everalgo-core`'s memory types is as an optional extra field), so M.O.T.'s "quality control lives at
+extraction, gated at 0.85" has no counterpart there; and `cluster_by_llm` is exercised by nothing
+in the repo's examples or pipelines, so its `0.85` skip threshold has no visible track record.
+
 **Other**
 
 - [ontology-guardrails-idea.md](ontology-guardrails-idea.md): neurosymbolic guardrails for the
