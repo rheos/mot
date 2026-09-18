@@ -10,14 +10,14 @@ This repository is a public-safe view of a system in active use at [Novadiem Stu
 - Provides a single-user triage interface built with the Next.js App Router
 - Stores data locally in SQLite with Drizzle migrations, WAL mode, FTS5 search, and backup hooks
 - Exposes JSON-RPC tools so agents and automations can read and update tickets
-- Maintains experimental memory layers for conversation logs, session digests, entity notes, topic threads, and vector-backed retrieval
+- Maintains a memory layer for conversation logs, session digests, an entity/procedural graph, and hybrid keyword/vector retrieval — see [docs/memory-architecture.md](docs/memory-architecture.md) for how it's put together
 - Tests integration and end-to-end behavior against real SQLite databases
 
 ## Architecture
 
 M.O.T. runs as a single Next.js process with a local SQLite database. The same application serves the operator interface, ticket API, agent tools, scheduled maintenance, and memory features.
 
-The main stack is Next.js 14, React, TypeScript, Drizzle ORM, `better-sqlite3`, FTS5, `sqlite-vec`, Vitest, and Playwright.
+The main stack is Next.js 15, React 19, TypeScript, Drizzle ORM, `better-sqlite3`, FTS5, `sqlite-vec`, Vitest, and Playwright.
 
 ## Local development
 
