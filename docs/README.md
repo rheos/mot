@@ -5,7 +5,9 @@ here as idea docs rather than as M.O.T. tickets, which are life-admin only.
 
 ## Architecture
 
-- [memory-architecture.md](memory-architecture.md): how the memory layer is put together.
+- [memory-architecture.md](memory-architecture.md): how the memory layer is put together — the
+  conversation/entity/procedural stores, the persistence and confirmation principles, the nightly
+  self-organizing workers, and where it's headed (planned extraction as its own product).
 
 ## Idea docs
 
