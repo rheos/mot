@@ -111,3 +111,43 @@ Do not build it yet. Write down the inventory first: every place in `lib/` that 
 of a retrieval result, and what it filters on. If that list is four clauses across two files, keep
 the clauses. If it is a dozen across six, the column has earned itself, and the inventory doubles
 as the migration spec.
+
+## Outcome (2026-09-18): NOT BUILT — the diagnosis was wrong
+
+This doc proposed cold-classing content-free chatter so it could not appear in results. Both halves
+of that failed under measurement, and the record is worth keeping because the reasoning is a trap
+worth not repeating.
+
+**The classification rule does not exist.** The plan was to score a turn by the document frequency
+of its rarest term: a turn with no distinctive words is contentless. Rarity is not meaning:
+
+```
+ 0.4%  When is my daughter's birthday?     <- want to KEEP
+ 1.5%  how are you holding up?             <- want to DROP
+ 0.5%  ok ship it                          <- want to DROP
+ 4.6%  Anything new?                       <- want to DROP
+```
+
+"holding" is rare in this corpus, so the chatter scores as *more* distinctive than the real
+question. At a 10% cut only 5 turns of 1,034 go cold, all variants of "Are you there?"; at 15%,
+none. The rule catches nothing wanted and would risk things that are not.
+
+**The diagnosis was wrong anyway.** The chatter was not appearing because the corpus contains
+chatter. KNN returns its k nearest neighbours whether or not anything is near, so when nothing
+relevant exists it returns the k least irrelevant rows. Removing rows from the corpus would only
+change which noise fills the slots. Measured distances made this unambiguous: a query with a real
+answer put it at 0.126 and the next hit at 0.508, while a query with no answer returned eight rows
+all between 0.559 and 0.590.
+
+The real fix was a relevance floor on the vector arm (issue #43, shipped), which addresses the
+cause rather than the symptom.
+
+**What survives from this doc.** The `retrieval_class` mechanism itself is still sound for rows
+that are genuinely not canonical memory — superseded records, explicit archives, duplicated leaf
+narration — and the FTS5 external-content-view implementation and the IDF-denominator warning are
+both still correct. What does not survive is the idea that "content-free chatter" is a mechanically
+identifiable population, or that removing it fixes noisy retrieval.
+
+The warning in the original text stands and is now doubly earned: `confirmed` must never become a
+member of the cold class.
+

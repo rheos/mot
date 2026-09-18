@@ -360,10 +360,18 @@ describe.skipIf(SKIP)('Track 5 — vec retrieval', () => {
 
       const results = await searchTurns('repairing the car engine in the garage', 'ret-l2', 10, 'vector');
       const order = results.map((r) => r.id);
-      // Nearest by semantics is ranked first; the unrelated turn ranks after the near one.
+      // Since issue #43 the vector arm drops hits beyond the relevance floor, so an unrelated
+      // turn may now be ABSENT rather than merely ranked last. That is a stronger form of the
+      // same invariant, so rank absent rows as +Infinity: "near comes before far" still holds,
+      // and a regression that returns rows in insertion or id order still fails (far and mid are
+      // seeded first, so they would take the top slots).
+      const rank = (id: number) => {
+        const i = order.indexOf(id);
+        return i === -1 ? Number.POSITIVE_INFINITY : i;
+      };
       expect(order[0]).toBe(near.id);
-      expect(order.indexOf(near.id)).toBeLessThan(order.indexOf(far.id));
-      expect(order.indexOf(near.id)).toBeLessThan(order.indexOf(mid.id));
+      expect(rank(near.id)).toBeLessThan(rank(far.id));
+      expect(rank(near.id)).toBeLessThan(rank(mid.id));
     },
     TEST_TIMEOUT,
   );
