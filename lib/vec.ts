@@ -135,6 +135,37 @@ export function vecDelete(db: DB, table: string, id: number | string): void {
   })();
 }
 
+/**
+ * Maximum vec0 L2 distance a hit may have and still count as relevant (issue #43).
+ *
+ * KNN returns its k nearest neighbours whether or not anything is NEAR. With no floor, a query
+ * about something the corpus has never discussed comes back with k plausible-looking rows, and a
+ * caller cannot tell that from a real answer.
+ *
+ * Measured 2026-09-18 against the live corpus, using the turn that followed each user question as
+ * ground truth (long answers only, so adjacency enrichment could not smuggle the question into the
+ * answer's vector):
+ *
+ *     RELEVANT (known answer)  n=37  min=0.383  p50=0.543  p90=0.723  max=0.733
+ *     IRRELEVANT (nonsense q)  n=60  min=0.599  p50=0.816  max=0.849
+ *
+ * 0.74-0.78 is a plateau keeping 100% of measured real answers while blocking ~83% of nonsense.
+ * 0.76 is its middle. The distributions OVERLAP, so no threshold separates them perfectly; this
+ * one deliberately protects recall, which is the side you cannot recover from, and accepts the
+ * nonsense that happens to land close.
+ *
+ * THIS NUMBER IS SPECIFIC TO THE CURRENT MODEL AND METRIC (MiniLM unit-normalized vectors, vec0
+ * L2, where L2 ranking == cosine ranking). Any change to the embedding representation invalidates
+ * it and requires re-measuring — that is exactly what EMBED_VERSION tracks. Raise the env var
+ * above the metric's maximum to disable the floor without a deploy.
+ */
+const DEFAULT_DISTANCE_FLOOR = 0.76;
+
+export function distanceFloor(): number {
+  const n = Number(process.env.VECTOR_DISTANCE_FLOOR);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_DISTANCE_FLOOR;
+}
+
 export function vecKnn(
   db: DB,
   table: string,
@@ -144,11 +175,15 @@ export function vecKnn(
   // The `AS id` alias is LOAD-BEARING: without it the row property is named per the table's
   // id column and h.id would be undefined at runtime while typecheck stays green. k binds as
   // a plain number. vec0 KNN on an empty table returns [] without error (EC 3).
-  return db
+  const hits = db
     .prepare(
       `SELECT ${idColForTable(table)} AS id, distance FROM ${table} WHERE embedding MATCH ? AND k = ?`,
     )
     .all(f32ToBlob(queryF32), k) as { id: number | string; distance: number }[];
+  // Relevance floor (issue #43). Applied HERE, at the one place every vector arm goes through,
+  // so no call site can forget it. Hits come back sorted by distance, so this is a prefix.
+  const floor = distanceFloor();
+  return hits.filter((h) => h.distance <= floor);
 }
 
 export function indexAsync(
