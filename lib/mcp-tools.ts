@@ -2,6 +2,7 @@ import { listTickets, getTicket, createTicket, patchTicket, type ListOpts } from
 import { buildStatus } from './status';
 import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './validation';
 import { logTurn, getRecentTurns, searchTurns } from './conversation';
+import type { RetrievalStats } from './rrf';
 import { structuralDigest } from './digest';
 import { writeMemory, getActiveMemory, searchActiveMemory, searchActiveMemoryVector, searchActiveMemoryHybrid } from './memory';
 import { listThreads, getThread, createThread, linkThreadSession, summarizeThread } from './topics';
@@ -252,7 +253,12 @@ export function listMcpTools(): ToolDef[] {
       name: 'chat_search',
       description:
         'Full-text or semantic search over Rheo conversation history. mode defaults to fts. ' +
-        'Pass mode:vector or mode:hybrid for semantic or combined retrieval.',
+        'Pass mode:vector or mode:hybrid for semantic or combined retrieval. ' +
+        'Returns { retrieval, results }: read `retrieval` before trusting `results` — it says ' +
+        'which arms ran and whether the semantic side was available. ' +
+        'These are TRANSCRIPTS: they record what was believed at the time, not what is true now. ' +
+        'Verify anything load-bearing (a deadline, a decision, a config value) against the ' +
+        'current ticket, entity or system state before repeating it as fact.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -262,7 +268,7 @@ export function listMcpTools(): ToolDef[] {
           mode: {
             type: 'string',
             enum: ['fts', 'vector', 'hybrid'],
-            description: 'Search mode. fts (default): keyword/FTS5. vector: semantic KNN. hybrid: RRF merge of fts + vector.',
+            description: 'Search mode. fts (default): keyword/FTS5 — exact terms, returns nothing if the words are absent. vector: semantic KNN — finds meaning without shared words, but ALWAYS returns its nearest rows, so judge relevance yourself rather than assuming a result is an answer. hybrid: RRF merge of both; degrades to the fts list if the semantic side is unavailable.',
           },
         },
         required: ['q'],
@@ -313,6 +319,10 @@ export function listMcpTools(): ToolDef[] {
         'Return active (non-superseded, non-conflicted) memory items, most recent first. ' +
         'Pass q to keyword-search them by FTS5 relevance instead. ' +
         'Pass mode:vector or mode:hybrid for semantic retrieval of memory. ' +
+        'Returns { retrieval, results }; read `retrieval` before trusting `results`. ' +
+        'A memory is a claim recorded at a point in time. It is corrected by supersession, not ' +
+        'by deletion, so an active item can still be out of date — prefer the most recent, and ' +
+        'check against live state when it matters. ' +
         'Entity-graph / topic-thread / procedural-note search are separate Track-2 tools.',
       inputSchema: {
         type: 'object',
@@ -323,7 +333,7 @@ export function listMcpTools(): ToolDef[] {
           mode: {
             type: 'string',
             enum: ['fts', 'vector', 'hybrid'],
-            description: 'Search mode. fts (default): keyword/FTS5. vector: semantic KNN. hybrid: RRF merge of fts + vector.',
+            description: 'Search mode. fts (default): keyword/FTS5 — exact terms, returns nothing if the words are absent. vector: semantic KNN — finds meaning without shared words, but ALWAYS returns its nearest rows, so judge relevance yourself rather than assuming a result is an answer. hybrid: RRF merge of both; degrades to the fts list if the semantic side is unavailable.',
           },
         },
       },
@@ -379,7 +389,7 @@ export function listMcpTools(): ToolDef[] {
     },
     {
       name: 'entity_search',
-      description: 'Search entities by keyword. Returns active records only by default.',
+      description: 'Search entities by keyword. Returns active records only by default. Returns { retrieval, results }; read `retrieval` before trusting `results`. Entities are extracted candidates: most are unconfirmed, and `confirmed` marks review status, not correctness. Use entity_related to follow an entity outward rather than re-searching for each neighbour.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -389,7 +399,7 @@ export function listMcpTools(): ToolDef[] {
           mode: {
             type: 'string',
             enum: ['fts', 'vector', 'hybrid'],
-            description: 'Search mode. fts (default): keyword/FTS5. vector: semantic KNN. hybrid: RRF merge of fts + vector.',
+            description: 'Search mode. fts (default): keyword/FTS5 — exact terms, returns nothing if the words are absent. vector: semantic KNN — finds meaning without shared words, but ALWAYS returns its nearest rows, so judge relevance yourself rather than assuming a result is an answer. hybrid: RRF merge of both; degrades to the fts list if the semantic side is unavailable.',
           },
         },
         required: ['q'],
@@ -750,11 +760,18 @@ export async function callMcpTool(
       const q = args.q as string;
       const chatId = args.chat_id as string | undefined;
       const limit = (args.limit as number) ?? 20;
-      if (mode === 'vector' || mode === 'hybrid') {
-        // W5: MUST await — the 4-arg overload returns Promise<Turn[]>.
-        return text(await searchTurns(q, chatId, limit, mode));
-      }
-      return text(searchTurns(q, chatId, limit)); // sync overload
+      // Caller-owned so concurrent requests cannot read each other's stats. The arms populate it;
+      // nothing here infers availability from a pre-flight check.
+      const retrieval: RetrievalStats = { mode: mode ?? 'fts' };
+      const results =
+        mode === 'vector' || mode === 'hybrid'
+          ? // W5: MUST await — the overload returns Promise<Turn[]>.
+            await searchTurns(q, chatId, limit, mode, retrieval)
+          : searchTurns(q, chatId, limit, undefined, retrieval); // sync overload
+      // { retrieval, results } rather than a bare array: the consumer is a model deciding how far
+      // to trust what it got, and a degraded hybrid answer is indistinguishable from a healthy one
+      // without this. See lib/rrf.ts RetrievalStats.
+      return text({ retrieval, results });
     }
 
     case 'summarize_and_archive': {

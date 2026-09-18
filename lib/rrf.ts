@@ -1,6 +1,29 @@
 // Track 5, Phase 2 — Reciprocal Rank Fusion (FR 14). No imports: this is the single,
 // dependency-free place hybrid retrieval fuses an FTS list with a vector list.
 
+/**
+ * What actually happened during a retrieval, for the CALLER to read.
+ *
+ * The degrade contract ratified 2026-07-06 is never-reject: a dead vector arm silently yields the
+ * FTS list rather than an error. That is the right behaviour and does not change. But silent is
+ * not the same as invisible — an agent handed results has no way to tell a healthy hybrid answer
+ * from one where half the system was down, and so cannot say "semantic search was unavailable,
+ * this may be incomplete". This is that missing signal.
+ *
+ * Populated by the arm itself, never inferred from a pre-flight check: `vecAvailable()` being
+ * true does not mean the embed call succeeded.
+ */
+export interface RetrievalStats {
+  /** Mode actually executed. */
+  mode: 'fts' | 'vector' | 'hybrid';
+  /** Rows the keyword arm returned, before fusion. */
+  fts_count?: number;
+  /** Rows the semantic arm returned, before fusion. */
+  vector_count?: number;
+  /** False when the semantic arm could not run OR threw. A hybrid call then degraded to FTS. */
+  semantic_available?: boolean;
+}
+
 /** One fused result, with the score and which input lists contributed to it. */
 export interface ScoredResult<T> {
   item: T;

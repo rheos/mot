@@ -2,7 +2,7 @@ import { getDb } from '../db/client';
 import { ftsQuery } from './fts';
 import { indexAsync, vecKnn, vecAvailable } from './vec';
 import { embed, embeddingEnabled } from './embedding';
-import { rrfMergeScored, scoreGapCutoff, FUSION_FETCH_MULTIPLIER } from './rrf';
+import { rrfMergeScored, scoreGapCutoff, FUSION_FETCH_MULTIPLIER, type RetrievalStats } from './rrf';
 
 const SESSION_GAP_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -107,13 +107,20 @@ export function getTurnsForSession(sessionId: string): Turn[] {
 }
 
 // Sync overload — existing ≤3-arg call sites bind here, return type is Turn[] (unchanged).
-export function searchTurns(q: string, chatId?: string, limit?: number): Turn[];
+export function searchTurns(
+  q: string,
+  chatId?: string,
+  limit?: number,
+  mode?: 'fts' | undefined,
+  stats?: RetrievalStats,
+): Turn[];
 // Async overload — 4-arg callers with mode:'vector'|'hybrid' bind here.
 export function searchTurns(
   q: string,
   chatId: string | undefined,
   limit: number,
   mode: 'vector' | 'hybrid',
+  stats?: RetrievalStats,
 ): Promise<Turn[]>;
 // Implementation.
 export function searchTurns(
@@ -121,6 +128,9 @@ export function searchTurns(
   chatId?: string,
   limit = 20,
   mode?: 'fts' | 'vector' | 'hybrid',
+  /** Optional caller-owned object, MUTATED with what each arm actually did. Caller-owned rather
+   *  than module-level so concurrent requests cannot read each other's stats. */
+  stats?: RetrievalStats,
 ): Turn[] | Promise<Turn[]> {
   if (!mode || mode === 'fts') {
     const db = getDb();
@@ -128,9 +138,13 @@ export function searchTurns(
     // question while the content sat in the index — and, because hybrid RRF-merges this arm,
     // silently made hybrid vector-only (issue #37).
     const phrase = ftsQuery(q, 'conversation_fts');
-    if (phrase === '') return [];
+    if (stats) stats.mode = 'fts';
+    if (phrase === '') {
+      if (stats) stats.fts_count = 0;
+      return [];
+    }
     if (chatId) {
-      return db
+      const scoped = db
         .prepare(
           `SELECT c.id, c.chat_id, c.session_id, c.role, c.content, c.ts
            FROM conversation_fts f
@@ -139,8 +153,10 @@ export function searchTurns(
            ORDER BY rank LIMIT ?`,
         )
         .all(phrase, chatId, limit) as Turn[];
+      if (stats) stats.fts_count = scoped.length;
+      return scoped;
     }
-    return db
+    const rows = db
       .prepare(
         `SELECT c.id, c.chat_id, c.session_id, c.role, c.content, c.ts
          FROM conversation_fts f
@@ -149,6 +165,8 @@ export function searchTurns(
          ORDER BY rank LIMIT ?`,
       )
       .all(phrase, limit) as Turn[];
+    if (stats) stats.fts_count = rows.length;
+    return rows;
   }
 
   // Async vector/hybrid path. Each arm carries its OWN guard, so this promise NEVER
@@ -166,6 +184,9 @@ export function searchTurns(
     const fuseLimit = mode === 'hybrid' ? limit * FUSION_FETCH_MULTIPLIER : limit;
 
     let vectorRows: Turn[] = [];
+    if (q.trim() === '' || !vecAvailable() || !embeddingEnabled()) {
+      if (stats) stats.semantic_available = false;
+    }
     if (q.trim() !== '' && vecAvailable() && embeddingEnabled()) {
       try {
         // Uniform over-fetch rule (W3): fetch k = min(n * 4, 256), filter down to n.
@@ -193,8 +214,10 @@ export function searchTurns(
       } catch (err) {
         console.error('[MOT/conversation] searchTurns vector arm degraded to []:', err);
         vectorRows = [];
+        if (stats) stats.semantic_available = false;
       }
     }
+    if (stats) stats.vector_count = vectorRows.length;
 
     if (mode === 'vector') return vectorRows;
 
@@ -210,6 +233,7 @@ export function searchTurns(
     // FTS-fallback: a degraded/empty vector arm yields exactly the mode:'fts' result.
     // Sliced explicitly: the fts arm was asked for fuseLimit (3x) for fusion, so without this
     // a dead vector arm would hand the caller three times what it asked for.
+    if (stats) stats.fts_count = ftsRows.length;
     if (vectorRows.length === 0) return ftsRows.slice(0, limit);
 
     // Both arms live: merge via RRF (FR 14), then cut at the score cliff if there is one.
