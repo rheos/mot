@@ -10,8 +10,10 @@
 //     pattern for Robin's own/single-user tools (never the raw Anthropic API at full price).
 //     Resolves the project-local node_modules/.bin/claude first (works in a container with no
 //     global install), falling back to whatever `claude` resolves to on PATH.
-//   - 'openrouter' — the swap-in for scale. Text-only, routed to a cheap model by default (this is
-//     mechanical dedup/resolution work, not prose) — MAINTAINER_OPENROUTER_MODEL overrides it.
+//   - 'openrouter' — the swap-in for scale, kept in the tree but BLOCKED unless also force-enabled
+//     with MAINTAINER_OPENROUTER_ALLOW=1 (see the spend guard below). Text-only, routed to a cheap
+//     model by default (mechanical dedup/resolution work, not prose) — MAINTAINER_OPENROUTER_MODEL
+//     overrides it.
 //
 // Both backends are SYNCHRONOUS (spawnSync) on purpose: resolutionWorker/dedupWorker/profileWorker
 // call `identify(prompt)` without awaiting it today, and making the seam async would mean threading
@@ -26,10 +28,34 @@ import path from 'node:path';
 
 export type MaintainerLLMProvider = 'claude-cli' | 'openrouter';
 
+// Spend guard (2026-09-21). OPENROUTER_API_KEY is a SHARED key that also funds other production
+// sites; MOT is NOT supposed to run on it, yet the nightly's ~80 sequential batches drained the
+// shared balance until those sites were affected too. Selecting OpenRouter therefore takes TWO
+// explicit env settings: MAINTAINER_LLM_PROVIDER=openrouter AND MAINTAINER_OPENROUTER_ALLOW=1. The
+// first alone (what production had set) is ignored — with one warning per process, never silently —
+// and the call runs on headless Claude, MOT's standing backend. A stale provider flag can no longer
+// spend a cent; re-enabling OpenRouter for MOT is a deliberate, documented decision, not a leftover.
+let warnedOpenRouterBlocked = false;
+
 function resolveProvider(): MaintainerLLMProvider {
-  return process.env.MAINTAINER_LLM_PROVIDER?.trim().toLowerCase() === 'openrouter'
-    ? 'openrouter'
-    : 'claude-cli';
+  const wantsOpenRouter = process.env.MAINTAINER_LLM_PROVIDER?.trim().toLowerCase() === 'openrouter';
+  if (!wantsOpenRouter) return 'claude-cli';
+  if (process.env.MAINTAINER_OPENROUTER_ALLOW?.trim() === '1') return 'openrouter';
+  if (!warnedOpenRouterBlocked) {
+    warnedOpenRouterBlocked = true;
+    // eslint-disable-next-line no-console
+    console.error(
+      '[MOT/llm-provider] MAINTAINER_LLM_PROVIDER=openrouter ignored: OpenRouter is blocked for MOT ' +
+        '(shared budget). Running on headless Claude instead. Unset MAINTAINER_LLM_PROVIDER, or set ' +
+        'MAINTAINER_OPENROUTER_ALLOW=1 to deliberately re-enable it.',
+    );
+  }
+  return 'claude-cli';
+}
+
+// Test-only: reset the once-per-process warning latch so each test observes it fresh.
+export function __resetOpenRouterWarningForTests(): void {
+  warnedOpenRouterBlocked = false;
 }
 
 // Extract the first balanced {...} JSON object from arbitrary LLM output (strips a ```json fence
@@ -82,6 +108,22 @@ function identifyViaClaudeCli(prompt: string): unknown {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
+// Output-token cap for the OpenRouter request. OpenRouter runs a credit PRE-CHECK against
+// max_tokens before it forwards the call, and when the body carries no max_tokens it reserves the
+// model's FULL output ceiling (64,000 for claude-haiku-4.5). That is how the 2026-09-21 nightly
+// failed every batch of every worker without spending a cent: "This request requires more credits,
+// or fewer max_tokens. You requested up to 64000 tokens, but can only afford 62039" — the balance
+// could easily cover the actual response (compact JSON over a ≤25-entity batch: a few thousand
+// tokens at the very most) but not a 64k reservation. Sending an explicit, realistic cap keeps a
+// modest balance usable and bounds the worst-case spend of a runaway response. Env-overridable and
+// read at CALL time like the other knobs; guarded against 0/NaN/negative.
+const DEFAULT_OPENROUTER_MAX_TOKENS = 8192;
+
+function resolveOpenRouterMaxTokens(): number {
+  const v = Number(process.env.MAINTAINER_OPENROUTER_MAX_TOKENS);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : DEFAULT_OPENROUTER_MAX_TOKENS;
+}
+
 function identifyViaOpenRouter(prompt: string): unknown {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('MAINTAINER_LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set');
@@ -91,6 +133,7 @@ function identifyViaOpenRouter(prompt: string): unknown {
     model,
     messages: [{ role: 'user', content: prompt }],
     temperature: 0,
+    max_tokens: resolveOpenRouterMaxTokens(),
   });
 
   // Array-argv spawnSync (no shell:true) — the prompt/body never passes through shell

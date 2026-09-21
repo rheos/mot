@@ -35,7 +35,8 @@ import { identifyViaProvider } from './llm-provider';
 // ── The shared LLM helper ──────────────────────────────────────────────────────
 // Delegates to the provider seam (lib/llm-provider.ts — novadiem-engineering standard 14): the
 // caller owns the prompt, this runs it via whichever backend MAINTAINER_LLM_PROVIDER selects
-// (headless `claude -p` by default, OpenRouter as the swap-in) and returns the first balanced JSON
+// (headless `claude -p` by default; OpenRouter only when ALSO force-enabled with
+// MAINTAINER_OPENROUTER_ALLOW=1 — shared-budget spend guard) and returns the first balanced JSON
 // object, or null when the output has no `{`. A non-zero exit throws (the caller's per-batch
 // try/catch turns that into batches_failed — EC-3). Kept as `identifyViaClaude` — the name every
 // call site (this file, lib/profile.ts, scripts/backfill-relations.ts) already imports as the

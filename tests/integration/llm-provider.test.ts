@@ -13,19 +13,27 @@ vi.mock('node:child_process', () => ({
   spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
 }));
 
-const { identifyViaProvider, extractBalancedJson } = await import('../../lib/llm-provider');
+const { identifyViaProvider, extractBalancedJson, __resetOpenRouterWarningForTests } = await import(
+  '../../lib/llm-provider',
+);
+
+function clearProviderEnv(): void {
+  delete process.env.MAINTAINER_LLM_PROVIDER;
+  delete process.env.MAINTAINER_OPENROUTER_ALLOW;
+  delete process.env.MAINTAINER_OPENROUTER_MODEL;
+  delete process.env.MAINTAINER_OPENROUTER_MAX_TOKENS;
+  delete process.env.OPENROUTER_API_KEY;
+}
 
 beforeEach(() => {
   spawnSyncMock.mockReset();
-  delete process.env.MAINTAINER_LLM_PROVIDER;
-  delete process.env.MAINTAINER_OPENROUTER_MODEL;
-  delete process.env.OPENROUTER_API_KEY;
+  __resetOpenRouterWarningForTests();
+  clearProviderEnv();
 });
 
 afterEach(() => {
-  delete process.env.MAINTAINER_LLM_PROVIDER;
-  delete process.env.MAINTAINER_OPENROUTER_MODEL;
-  delete process.env.OPENROUTER_API_KEY;
+  clearProviderEnv();
+  vi.restoreAllMocks();
 });
 
 describe('extractBalancedJson', () => {
@@ -88,9 +96,58 @@ describe('identifyViaProvider — claude-cli backend (default)', () => {
   });
 });
 
-describe('identifyViaProvider — openrouter backend', () => {
+// The 2026-09-21 spend guard: OPENROUTER_API_KEY is a shared key funding other production sites, and
+// MOT's nightly drained it. MAINTAINER_LLM_PROVIDER=openrouter on its own (production's stale
+// setting) must therefore select NOTHING but headless Claude — no curl, no spend — and say so once.
+describe('identifyViaProvider — OpenRouter is blocked without MAINTAINER_OPENROUTER_ALLOW=1', () => {
   beforeEach(() => {
     process.env.MAINTAINER_LLM_PROVIDER = 'openrouter';
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '{"ok":true}', stderr: '' });
+  });
+
+  it('runs headless claude instead of curl when only the provider flag is set', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = identifyViaProvider('PROMPT TEXT');
+
+    expect(result).toEqual({ ok: true });
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    const [bin, args] = spawnSyncMock.mock.calls[0] as [string, string[]];
+    expect(bin).not.toBe('curl');
+    expect(bin).toMatch(/claude$/);
+    expect(args.join(' ')).not.toContain('openrouter');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/OpenRouter is blocked for MOT/);
+  });
+
+  it('warns once per process, not once per batch', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    identifyViaProvider('a');
+    identifyViaProvider('b');
+    identifyViaProvider('c');
+
+    expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a junk MAINTAINER_OPENROUTER_ALLOW value as consent', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const junk of ['true', 'yes', '0', '', ' 1x']) {
+      spawnSyncMock.mockClear();
+      process.env.MAINTAINER_OPENROUTER_ALLOW = junk;
+      identifyViaProvider('x');
+      const [bin] = spawnSyncMock.mock.calls[0] as [string];
+      expect(bin).not.toBe('curl');
+    }
+  });
+});
+
+describe('identifyViaProvider — openrouter backend (explicitly allowed)', () => {
+  beforeEach(() => {
+    process.env.MAINTAINER_LLM_PROVIDER = 'openrouter';
+    process.env.MAINTAINER_OPENROUTER_ALLOW = '1';
     process.env.OPENROUTER_API_KEY = 'test-key';
   });
 
@@ -117,6 +174,44 @@ describe('identifyViaProvider — openrouter backend', () => {
     const body = JSON.parse(opts.input);
     expect(body.model).toBe('anthropic/claude-haiku-4.5');
     expect(body.messages).toEqual([{ role: 'user', content: 'PROMPT TEXT' }]);
+  });
+
+  // The 2026-09-21 outage shape: with no max_tokens in the body OpenRouter's credit pre-check
+  // reserves the model's full 64k output ceiling and rejects the call ("requires more credits, or
+  // fewer max_tokens") even though the balance covers the real response many times over. An
+  // explicit cap MUST always be sent.
+  it('always sends an explicit max_tokens cap (default 8192) so the credit pre-check reserves a realistic amount', () => {
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: JSON.stringify({ choices: [{ message: { content: '{}' } }] }),
+      stderr: '',
+    });
+
+    identifyViaProvider('x');
+
+    const [, , opts] = spawnSyncMock.mock.calls[0] as [string, string[], { input: string }];
+    expect(JSON.parse(opts.input).max_tokens).toBe(8192);
+  });
+
+  it('honors MAINTAINER_OPENROUTER_MAX_TOKENS when set, ignoring junk values', () => {
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: JSON.stringify({ choices: [{ message: { content: '{}' } }] }),
+      stderr: '',
+    });
+
+    process.env.MAINTAINER_OPENROUTER_MAX_TOKENS = '4096';
+    identifyViaProvider('x');
+    let [, , opts] = spawnSyncMock.mock.calls[0] as [string, string[], { input: string }];
+    expect(JSON.parse(opts.input).max_tokens).toBe(4096);
+
+    for (const junk of ['0', '-5', 'abc', '']) {
+      spawnSyncMock.mockClear();
+      process.env.MAINTAINER_OPENROUTER_MAX_TOKENS = junk;
+      identifyViaProvider('x');
+      [, , opts] = spawnSyncMock.mock.calls[0] as [string, string[], { input: string }];
+      expect(JSON.parse(opts.input).max_tokens).toBe(8192);
+    }
   });
 
   it('honors MAINTAINER_OPENROUTER_MODEL when set', () => {
