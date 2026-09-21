@@ -82,6 +82,22 @@ function identifyViaClaudeCli(prompt: string): unknown {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
+// Output-token cap for the OpenRouter request. OpenRouter runs a credit PRE-CHECK against
+// max_tokens before it forwards the call, and when the body carries no max_tokens it reserves the
+// model's FULL output ceiling (64,000 for claude-haiku-4.5). That is how the 2026-09-21 nightly
+// failed every batch of every worker without spending a cent: "This request requires more credits,
+// or fewer max_tokens. You requested up to 64000 tokens, but can only afford 62039" — the balance
+// could easily cover the actual response (compact JSON over a ≤25-entity batch: a few thousand
+// tokens at the very most) but not a 64k reservation. Sending an explicit, realistic cap keeps a
+// modest balance usable and bounds the worst-case spend of a runaway response. Env-overridable and
+// read at CALL time like the other knobs; guarded against 0/NaN/negative.
+const DEFAULT_OPENROUTER_MAX_TOKENS = 8192;
+
+function resolveOpenRouterMaxTokens(): number {
+  const v = Number(process.env.MAINTAINER_OPENROUTER_MAX_TOKENS);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : DEFAULT_OPENROUTER_MAX_TOKENS;
+}
+
 function identifyViaOpenRouter(prompt: string): unknown {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('MAINTAINER_LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set');
@@ -91,6 +107,7 @@ function identifyViaOpenRouter(prompt: string): unknown {
     model,
     messages: [{ role: 'user', content: prompt }],
     temperature: 0,
+    max_tokens: resolveOpenRouterMaxTokens(),
   });
 
   // Array-argv spawnSync (no shell:true) — the prompt/body never passes through shell

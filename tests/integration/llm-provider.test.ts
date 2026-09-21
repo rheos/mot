@@ -19,12 +19,14 @@ beforeEach(() => {
   spawnSyncMock.mockReset();
   delete process.env.MAINTAINER_LLM_PROVIDER;
   delete process.env.MAINTAINER_OPENROUTER_MODEL;
+  delete process.env.MAINTAINER_OPENROUTER_MAX_TOKENS;
   delete process.env.OPENROUTER_API_KEY;
 });
 
 afterEach(() => {
   delete process.env.MAINTAINER_LLM_PROVIDER;
   delete process.env.MAINTAINER_OPENROUTER_MODEL;
+  delete process.env.MAINTAINER_OPENROUTER_MAX_TOKENS;
   delete process.env.OPENROUTER_API_KEY;
 });
 
@@ -117,6 +119,44 @@ describe('identifyViaProvider — openrouter backend', () => {
     const body = JSON.parse(opts.input);
     expect(body.model).toBe('anthropic/claude-haiku-4.5');
     expect(body.messages).toEqual([{ role: 'user', content: 'PROMPT TEXT' }]);
+  });
+
+  // The 2026-09-21 outage shape: with no max_tokens in the body OpenRouter's credit pre-check
+  // reserves the model's full 64k output ceiling and rejects the call ("requires more credits, or
+  // fewer max_tokens") even though the balance covers the real response many times over. An
+  // explicit cap MUST always be sent.
+  it('always sends an explicit max_tokens cap (default 8192) so the credit pre-check reserves a realistic amount', () => {
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: JSON.stringify({ choices: [{ message: { content: '{}' } }] }),
+      stderr: '',
+    });
+
+    identifyViaProvider('x');
+
+    const [, , opts] = spawnSyncMock.mock.calls[0] as [string, string[], { input: string }];
+    expect(JSON.parse(opts.input).max_tokens).toBe(8192);
+  });
+
+  it('honors MAINTAINER_OPENROUTER_MAX_TOKENS when set, ignoring junk values', () => {
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: JSON.stringify({ choices: [{ message: { content: '{}' } }] }),
+      stderr: '',
+    });
+
+    process.env.MAINTAINER_OPENROUTER_MAX_TOKENS = '4096';
+    identifyViaProvider('x');
+    let [, , opts] = spawnSyncMock.mock.calls[0] as [string, string[], { input: string }];
+    expect(JSON.parse(opts.input).max_tokens).toBe(4096);
+
+    for (const junk of ['0', '-5', 'abc', '']) {
+      spawnSyncMock.mockClear();
+      process.env.MAINTAINER_OPENROUTER_MAX_TOKENS = junk;
+      identifyViaProvider('x');
+      [, , opts] = spawnSyncMock.mock.calls[0] as [string, string[], { input: string }];
+      expect(JSON.parse(opts.input).max_tokens).toBe(8192);
+    }
   });
 
   it('honors MAINTAINER_OPENROUTER_MODEL when set', () => {
