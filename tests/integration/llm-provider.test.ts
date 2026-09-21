@@ -13,21 +13,27 @@ vi.mock('node:child_process', () => ({
   spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
 }));
 
-const { identifyViaProvider, extractBalancedJson } = await import('../../lib/llm-provider');
+const { identifyViaProvider, extractBalancedJson, __resetOpenRouterWarningForTests } = await import(
+  '../../lib/llm-provider',
+);
+
+function clearProviderEnv(): void {
+  delete process.env.MAINTAINER_LLM_PROVIDER;
+  delete process.env.MAINTAINER_OPENROUTER_ALLOW;
+  delete process.env.MAINTAINER_OPENROUTER_MODEL;
+  delete process.env.MAINTAINER_OPENROUTER_MAX_TOKENS;
+  delete process.env.OPENROUTER_API_KEY;
+}
 
 beforeEach(() => {
   spawnSyncMock.mockReset();
-  delete process.env.MAINTAINER_LLM_PROVIDER;
-  delete process.env.MAINTAINER_OPENROUTER_MODEL;
-  delete process.env.MAINTAINER_OPENROUTER_MAX_TOKENS;
-  delete process.env.OPENROUTER_API_KEY;
+  __resetOpenRouterWarningForTests();
+  clearProviderEnv();
 });
 
 afterEach(() => {
-  delete process.env.MAINTAINER_LLM_PROVIDER;
-  delete process.env.MAINTAINER_OPENROUTER_MODEL;
-  delete process.env.MAINTAINER_OPENROUTER_MAX_TOKENS;
-  delete process.env.OPENROUTER_API_KEY;
+  clearProviderEnv();
+  vi.restoreAllMocks();
 });
 
 describe('extractBalancedJson', () => {
@@ -90,9 +96,58 @@ describe('identifyViaProvider — claude-cli backend (default)', () => {
   });
 });
 
-describe('identifyViaProvider — openrouter backend', () => {
+// The 2026-09-21 spend guard: OPENROUTER_API_KEY is a shared key funding other production sites, and
+// MOT's nightly drained it. MAINTAINER_LLM_PROVIDER=openrouter on its own (production's stale
+// setting) must therefore select NOTHING but headless Claude — no curl, no spend — and say so once.
+describe('identifyViaProvider — OpenRouter is blocked without MAINTAINER_OPENROUTER_ALLOW=1', () => {
   beforeEach(() => {
     process.env.MAINTAINER_LLM_PROVIDER = 'openrouter';
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '{"ok":true}', stderr: '' });
+  });
+
+  it('runs headless claude instead of curl when only the provider flag is set', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = identifyViaProvider('PROMPT TEXT');
+
+    expect(result).toEqual({ ok: true });
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    const [bin, args] = spawnSyncMock.mock.calls[0] as [string, string[]];
+    expect(bin).not.toBe('curl');
+    expect(bin).toMatch(/claude$/);
+    expect(args.join(' ')).not.toContain('openrouter');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/OpenRouter is blocked for MOT/);
+  });
+
+  it('warns once per process, not once per batch', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    identifyViaProvider('a');
+    identifyViaProvider('b');
+    identifyViaProvider('c');
+
+    expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a junk MAINTAINER_OPENROUTER_ALLOW value as consent', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const junk of ['true', 'yes', '0', '', ' 1x']) {
+      spawnSyncMock.mockClear();
+      process.env.MAINTAINER_OPENROUTER_ALLOW = junk;
+      identifyViaProvider('x');
+      const [bin] = spawnSyncMock.mock.calls[0] as [string];
+      expect(bin).not.toBe('curl');
+    }
+  });
+});
+
+describe('identifyViaProvider — openrouter backend (explicitly allowed)', () => {
+  beforeEach(() => {
+    process.env.MAINTAINER_LLM_PROVIDER = 'openrouter';
+    process.env.MAINTAINER_OPENROUTER_ALLOW = '1';
     process.env.OPENROUTER_API_KEY = 'test-key';
   });
 

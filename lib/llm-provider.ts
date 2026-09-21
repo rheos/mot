@@ -10,8 +10,10 @@
 //     pattern for Robin's own/single-user tools (never the raw Anthropic API at full price).
 //     Resolves the project-local node_modules/.bin/claude first (works in a container with no
 //     global install), falling back to whatever `claude` resolves to on PATH.
-//   - 'openrouter' — the swap-in for scale. Text-only, routed to a cheap model by default (this is
-//     mechanical dedup/resolution work, not prose) — MAINTAINER_OPENROUTER_MODEL overrides it.
+//   - 'openrouter' — the swap-in for scale, kept in the tree but BLOCKED unless also force-enabled
+//     with MAINTAINER_OPENROUTER_ALLOW=1 (see the spend guard below). Text-only, routed to a cheap
+//     model by default (mechanical dedup/resolution work, not prose) — MAINTAINER_OPENROUTER_MODEL
+//     overrides it.
 //
 // Both backends are SYNCHRONOUS (spawnSync) on purpose: resolutionWorker/dedupWorker/profileWorker
 // call `identify(prompt)` without awaiting it today, and making the seam async would mean threading
@@ -26,10 +28,34 @@ import path from 'node:path';
 
 export type MaintainerLLMProvider = 'claude-cli' | 'openrouter';
 
+// Spend guard (2026-09-21). OPENROUTER_API_KEY is a SHARED key that also funds other production
+// sites; MOT is NOT supposed to run on it, yet the nightly's ~80 sequential batches drained the
+// shared balance until those sites were affected too. Selecting OpenRouter therefore takes TWO
+// explicit env settings: MAINTAINER_LLM_PROVIDER=openrouter AND MAINTAINER_OPENROUTER_ALLOW=1. The
+// first alone (what production had set) is ignored — with one warning per process, never silently —
+// and the call runs on headless Claude, MOT's standing backend. A stale provider flag can no longer
+// spend a cent; re-enabling OpenRouter for MOT is a deliberate, documented decision, not a leftover.
+let warnedOpenRouterBlocked = false;
+
 function resolveProvider(): MaintainerLLMProvider {
-  return process.env.MAINTAINER_LLM_PROVIDER?.trim().toLowerCase() === 'openrouter'
-    ? 'openrouter'
-    : 'claude-cli';
+  const wantsOpenRouter = process.env.MAINTAINER_LLM_PROVIDER?.trim().toLowerCase() === 'openrouter';
+  if (!wantsOpenRouter) return 'claude-cli';
+  if (process.env.MAINTAINER_OPENROUTER_ALLOW?.trim() === '1') return 'openrouter';
+  if (!warnedOpenRouterBlocked) {
+    warnedOpenRouterBlocked = true;
+    // eslint-disable-next-line no-console
+    console.error(
+      '[MOT/llm-provider] MAINTAINER_LLM_PROVIDER=openrouter ignored: OpenRouter is blocked for MOT ' +
+        '(shared budget). Running on headless Claude instead. Unset MAINTAINER_LLM_PROVIDER, or set ' +
+        'MAINTAINER_OPENROUTER_ALLOW=1 to deliberately re-enable it.',
+    );
+  }
+  return 'claude-cli';
+}
+
+// Test-only: reset the once-per-process warning latch so each test observes it fresh.
+export function __resetOpenRouterWarningForTests(): void {
+  warnedOpenRouterBlocked = false;
 }
 
 // Extract the first balanced {...} JSON object from arbitrary LLM output (strips a ```json fence
