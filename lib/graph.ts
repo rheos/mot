@@ -13,7 +13,7 @@ import path from 'node:path';
 import { createId } from '@paralleldrive/cuid2';
 import { nowIso } from './time';
 import { getDb } from '../db/client';
-import { indexAsync, vecKnn, vecAvailable } from './vec';
+import { indexAsync, vecKnn, vecAvailable, vecDelete } from './vec';
 import { embed, embeddingEnabled } from './embedding';
 import { rrfMergeScored, scoreGapCutoff, FUSION_FETCH_MULTIPLIER } from './rrf';
 
@@ -150,6 +150,18 @@ export function appendSupersede(oldId: string, newId: string): void {
   const file = graphPath();
   ensureDir(file);
   fs.appendFileSync(file, JSON.stringify(patch) + '\n');
+  // Issue #63: drop the superseded entity's vector AFTER the durable append, fire-and-forget, the
+  // way writeMemory prunes memory_items_vec on a supersede. Before this the vector lived on until
+  // compaction, which the nightly job runs only past 5 MB, so in practice never: 194 of 639
+  // entity_vec rows on prod (2026-09-22) belonged to superseded entities and sat inside every entity
+  // KNN window before the post-KNN active filter threw them away. Same double gate as indexAsync
+  // (W1): vecAvailable() alone means "extension loaded", not "vec tables exist" — the embed-off test
+  // suite has no 0007 tables and an ungated DELETE would emit caught-but-noisy errors.
+  if (embeddingEnabled() && vecAvailable()) {
+    void Promise.resolve()
+      .then(() => vecDelete(getDb(), 'entity_vec', oldId))
+      .catch((err) => console.error('[MOT/vec] entity supersede vec-delete error:', err));
+  }
 }
 
 /**
