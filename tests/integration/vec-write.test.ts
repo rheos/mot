@@ -12,7 +12,7 @@ import path from 'node:path';
 // download and no vec write ever fires for them (AC 1). This file is one of the THREE that opt
 // back in to real embedding (with vec-retrieval.test.ts and vec-backfill.test.ts). It proves
 // every write path lands a row in its vec0 table plus the
-// two prune paths (memory supersede, entity compaction) and the EMBED_INLINE=false deferred
+// three prune paths (memory supersede, entity supersede, entity compaction) and the EMBED_INLINE=false deferred
 // sweep. It self-configures three things ordinary tests don't:
 //   (a) delete MOT_EMBED_DISABLE at module top — env is read lazily per call, so this opts in;
 //       RESTORED in afterAll (safe under vitest fork-per-file isolation, required if a fork is
@@ -272,6 +272,54 @@ describe.skipIf(SKIP)('Track 5 — vec write paths', () => {
 
       expect(vecCount('entity_vec', 'entity_id', doomed.id)).toBe(0);
       expect(vecCount('entity_vec', 'entity_id', survivor.id)).toBe(1);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'TEST 5b — appendSupersede prunes the superseded entity_vec row itself, no compaction needed (#63)',
+    async () => {
+      const survivor = appendEntity({
+        type: 'Fact',
+        label: 'survivor entity 63',
+        properties: {},
+        valid_from: new Date().toISOString(),
+        valid_until: null,
+        confidence: 0.9,
+        source: 'test:survivor-63',
+        superseded_by: null,
+        confirmed: false,
+      });
+      const doomed = appendEntity({
+        type: 'Fact',
+        label: 'doomed entity 63',
+        properties: {},
+        valid_from: new Date().toISOString(),
+        valid_until: null,
+        confidence: 0.9,
+        source: 'test:doomed-63',
+        superseded_by: null,
+        confirmed: false,
+      });
+
+      // Same ordering discipline as TEST 3: the doomed row must be durably indexed BEFORE the
+      // supersede, or its detached insert could land after the detached delete and resurrect it.
+      await vi.waitFor(() => {
+        expect(vecCount('entity_vec', 'entity_id', survivor.id)).toBe(1);
+        expect(vecCount('entity_vec', 'entity_id', doomed.id)).toBe(1);
+      }, WAIT);
+
+      appendSupersede(doomed.id, survivor.id); // NO compactGraph call — the supersede itself prunes
+
+      await vi.waitFor(() => {
+        expect(vecCount('entity_vec', 'entity_id', doomed.id)).toBe(0);
+      }, WAIT);
+      expect(vecCount('entity_vec', 'entity_id', survivor.id)).toBe(1);
+      // vec_meta goes with it — vecDelete is one transaction over both tables.
+      const meta = getDb()
+        .prepare(`SELECT count(*) AS n FROM vec_meta WHERE table_name = 'entity_vec' AND row_id = ?`)
+        .get(doomed.id) as { n: number };
+      expect(meta.n).toBe(0);
     },
     TEST_TIMEOUT,
   );

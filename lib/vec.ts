@@ -161,9 +161,38 @@ export function vecDelete(db: DB, table: string, id: number | string): void {
  */
 const DEFAULT_DISTANCE_FLOOR = 0.76;
 
-export function distanceFloor(): number {
-  const n = Number(process.env.VECTOR_DISTANCE_FLOOR);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_DISTANCE_FLOOR;
+/** The one store the 0.76 was measured on. Every other store gets no floor until it has its own. */
+const FLOOR_CALIBRATED_TABLE = 'conversation_vec';
+
+function parseFloor(raw: string | undefined): number | null {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * The distance floor for one vec store (issue #65).
+ *
+ * The 0.76 above was measured on conversation turns and nothing else. The other three stores embed
+ * different text shapes (an entity is `label + JSON(properties)`, a memory item is `label + reason`,
+ * a digest is a summary), and no known-answer set has been built for any of them, so a
+ * turn-calibrated cut applied there is an untested guess in whichever direction it errs. Until a
+ * store has its own measurement it gets NO floor: KNN returns its k nearest, which is what every
+ * store did before #43 and what the tool descriptions already tell the caller to expect.
+ *
+ * Resolution order, all read at call time so nothing needs a deploy:
+ *   1. `VECTOR_DISTANCE_FLOOR_<TABLE>` (e.g. VECTOR_DISTANCE_FLOOR_ENTITY_VEC) — a per-store floor.
+ *      This is the lever for setting an entity floor once one is measured.
+ *   2. For conversation_vec only: `VECTOR_DISTANCE_FLOOR`, else 0.76.
+ *   3. Otherwise Infinity (no floor).
+ * Called with no table it answers for conversation_vec, the pre-#65 contract.
+ */
+export function distanceFloor(table: string = FLOOR_CALIBRATED_TABLE): number {
+  const perStore = parseFloor(process.env[`VECTOR_DISTANCE_FLOOR_${table.toUpperCase()}`]);
+  if (perStore !== null) return perStore;
+  if (table === FLOOR_CALIBRATED_TABLE) {
+    return parseFloor(process.env.VECTOR_DISTANCE_FLOOR) ?? DEFAULT_DISTANCE_FLOOR;
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 export function vecKnn(
@@ -181,8 +210,9 @@ export function vecKnn(
     )
     .all(f32ToBlob(queryF32), k) as { id: number | string; distance: number }[];
   // Relevance floor (issue #43). Applied HERE, at the one place every vector arm goes through,
-  // so no call site can forget it. Hits come back sorted by distance, so this is a prefix.
-  const floor = distanceFloor();
+  // so no call site can forget it. Hits come back sorted by distance, so this is a prefix. The
+  // floor is per store (#65): only conversation_vec has a measured one; see distanceFloor.
+  const floor = distanceFloor(table);
   return hits.filter((h) => h.distance <= floor);
 }
 
