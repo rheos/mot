@@ -115,3 +115,26 @@ shared prerequisite and should happen once.
 
 Two of them are an embed-input representation change and want to land together: context enrichment
 changes how vectors are computed, and the version stamp is what makes that change verifiable.
+
+## Attribution
+
+The crispy-recall review above, and several of the changes it produced, draw on
+**[crispy-recall](https://github.com/TheSylvester/crispy-recall)** by Sylvester Wong — MIT
+licensed, Copyright (c) 2026 Sylvester Wong.
+
+Most of what came across is *ideas*, reimplemented against this codebase and re-measured against
+this corpus, which is why several of the constants here differ from the originals. Two functions
+are closer than that and carry the notice in their own file headers:
+
+- `lib/embed-input.ts` — `buildEmbedText` is a close paraphrase of the original in
+  `src/recall/embed-config.ts`.
+- `lib/fts.ts` — `fts5Stem` is a close paraphrase of the original in
+  `src/recall/query-sanitizer.ts`.
+
+Not from crispy-recall, and noted here so the line stays clear if any of this ports onward: the
+vector relevance floor (`lib/vec.ts`, issue #43 — crispy-recall has no equivalent), the structural
+stopword union in `lib/fts.ts`, the session-boundary rule on enrichment, the per-call retrieval
+provenance, and the tool-call log.
+
+If any of this moves into another repository, the notice moves with those two files.
+

@@ -1,3 +1,13 @@
+// Adjacency-enriched embed input, and the version stamp that records which rule produced a
+// stored vector.
+//
+// ATTRIBUTION. The technique, this function's shape, and the constant names below follow
+// crispy-recall by Sylvester Wong (https://github.com/TheSylvester/crispy-recall), MIT licensed,
+// Copyright (c) 2026 Sylvester Wong. `buildEmbedText` here is a close paraphrase of the original
+// in its `src/recall/embed-config.ts`, not an independent implementation, so the notice travels
+// with it. Divergences are ours and are marked where they occur (session-boundary handling,
+// call-time thresholds, the sidecar version table).
+//
 // Embed-input representation — the single source of truth for what text actually gets embedded,
 // and for the version stamp that records which rule produced a stored vector.
 //
