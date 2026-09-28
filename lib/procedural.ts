@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Recallatron Phase 3 — procedural notes (FR 1–5, FR 12–15, EC-8, AC-8, AC-14, OQ-5).
 //
 // Append-only operator workflow notes with a supersede chain (superseded_by self-FK), mirroring
@@ -32,6 +33,7 @@ export function insertCandidate(
   sourceSessionId: string,
   chatId?: string,
 ): ProceduralNote | { error: 'duplicate_skipped'; note_norm: string } {
+  requireMemoryEnabled();
   const db = getDb();
   const noteNorm = note.trim().toLowerCase();
 
@@ -98,6 +100,7 @@ export function listNotes(
 export function confirmNote(
   id: number,
 ): ProceduralNote | { error: string; [k: string]: unknown } {
+  requireMemoryEnabled();
   const db = getDb();
 
   const row = db
@@ -132,6 +135,7 @@ export function confirmNote(
 // It is kept as a forward-guard: if a future dedup pass starts bumping mention_count, a note that
 // has resurfaced more than once should NOT be silently pruned just for being unconfirmed.
 export function prunePendingProcedural(maxAgeDays = 30): number {
+  requireMemoryEnabled();
   const db = getDb();
   const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
 

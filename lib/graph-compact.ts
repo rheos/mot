@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Recallatron Phase 2 — graph maintenance (Track 4, Prompt 2).
 //
 // Three nightly/admin maintenance primitives over the append-only ontology/graph.jsonl store:
@@ -155,6 +156,7 @@ function foldRecords(records: ParsedLine[]): Map<string, EntityRecord> {
  * the original file intact (EC-9). No-op + log when the file is absent (AC-9).
  */
 export async function compactGraph(graphPath: string): Promise<void> {
+  requireMemoryEnabled();
   if (!fs.existsSync(graphPath)) {
     console.log(`[MOT/graph-compact] no graph file at ${graphPath}, skipping`);
     return;
@@ -227,6 +229,7 @@ export async function compactGraph(graphPath: string): Promise<void> {
  * re-run (EC-6). null/malformed `valid_from` is skipped gracefully (EC-10).
  */
 export function prunePendingEntities(maxAgeDays = 30): void {
+  requireMemoryEnabled();
   const graphPath = defaultGraphPath();
   // Raw-read + fold the full graph (every entity, including unconfirmed — do NOT filter to
   // active-only here; we need the unconfirmed candidates).

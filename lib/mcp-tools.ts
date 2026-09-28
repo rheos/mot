@@ -1,3 +1,4 @@
+import { MemoryDisabledError, toolAvailable } from './memory-control';
 import { listTickets, getTicket, createTicket, patchTicket, type ListOpts } from './tickets';
 import { buildStatus } from './status';
 import { createTicketSchema, patchTicketSchema, writeMemorySchema } from './validation';
@@ -48,7 +49,7 @@ const PROVENANCE_ENUM = [
 ];
 
 export function listMcpTools(): ToolDef[] {
-  return [
+  const tools: ToolDef[] = [
     {
       name: 'mot_list_tickets',
       description:
@@ -694,6 +695,7 @@ export function listMcpTools(): ToolDef[] {
       },
     },
   ];
+  return tools.filter((tool) => toolAvailable(tool.name));
 }
 
 /**
@@ -710,6 +712,8 @@ export async function callMcpTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolContent> {
+  // Before validation AND logging: refused memory input must not reach storage.
+  if (!toolAvailable(name)) throw new MemoryDisabledError();
   const started = Date.now();
   try {
     const content = await dispatchMcpTool(name, args);

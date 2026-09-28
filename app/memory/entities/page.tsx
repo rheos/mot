@@ -1,3 +1,4 @@
+import { memoryDisabled } from '../../../lib/memory-control';
 import { searchEntities, type EntityRecord } from '../../../lib/graph';
 import { EntityBrowser } from '../../../components/memory/EntityBrowser';
 import { MemoryNav } from '../../../components/memory/MemoryNav';
@@ -18,6 +19,9 @@ import { MemoryNav } from '../../../components/memory/MemoryNav';
 export const dynamic = 'force-dynamic';
 
 export default function EntitiesPage(): React.JSX.Element {
+  if (memoryDisabled()) {
+    return <main className="mx-auto max-w-5xl px-4 py-4">M.O.T. memory is disabled. Ticketing remains available.</main>;
+  }
   let active: EntityRecord[] = [];
   let unconfirmed: EntityRecord[] = [];
   let error = false;

@@ -45,6 +45,8 @@ npm run build
 
 M.O.T. is designed for a single trusted operator, not as a multi-tenant service. Runtime data, environment files, model caches, private operator notes, and backups are ignored by git. Production deployments should add their own TLS, access controls, backup policy, and secret management at the hosting boundary.
 
+For a memory cutover, `MOT_MEMORY_DISABLE=1` runs M.O.T. in ticket-only mode without deleting existing memory. It is off by default and requires a stop/drain/restart boundary; see [the operator checklist](docs/memory-disable.md).
+
 ## License
 
 This repository does not currently include an open-source license. Public visibility does not grant permission to copy, redistribute, or reuse its code or documentation.

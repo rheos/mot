@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Recallatron Phase 2 — the entity graph (FR 6–11).
 //
 // Append-only JSONL store at ontology/graph.jsonl (gitignored; server-only live data, OQ-1=B).
@@ -109,6 +110,7 @@ const FIVE_MB = 5 * 1024 * 1024;
  * syscall — AC-4; no temp-file rename). Returns the full record with its generated id.
  */
 export function appendEntity(rec: Omit<EntityRecord, 'id'>): EntityRecord {
+  requireMemoryEnabled();
   const full: EntityRecord = { ...rec, id: createId() };
   const file = graphPath();
   ensureDir(file);
@@ -135,6 +137,7 @@ export function appendEntity(rec: Omit<EntityRecord, 'id'>): EntityRecord {
  * Fires the same fire-and-forget vec re-index as appendEntity (the label/properties text changed).
  */
 export function appendEntityRecord(rec: EntityRecord): void {
+  requireMemoryEnabled();
   const file = graphPath();
   ensureDir(file);
   fs.appendFileSync(file, JSON.stringify(rec) + '\n');
@@ -146,6 +149,7 @@ export function appendEntityRecord(rec: EntityRecord): void {
  * single-syscall append pattern as appendEntity.
  */
 export function appendSupersede(oldId: string, newId: string): void {
+  requireMemoryEnabled();
   const patch: SupersessionPatch = { op: 'supersede', old: oldId, new: newId, ts: nowIso() };
   const file = graphPath();
   ensureDir(file);
@@ -169,6 +173,7 @@ export function appendSupersede(oldId: string, newId: string): void {
  * change. Same single-syscall append pattern as appendEntity / appendSupersede.
  */
 export function appendEntityConfirm(id: string): void {
+  requireMemoryEnabled();
   const patch: ConfirmPatch = { op: 'confirm', id, ts: nowIso() };
   const file = graphPath();
   ensureDir(file);
@@ -190,6 +195,7 @@ export function appendRelate(
   source: string,
   confirmed: boolean,
 ): RelatePatch {
+  requireMemoryEnabled();
   const now = nowIso();
   const patch: RelatePatch = {
     op: 'relate',
@@ -211,6 +217,7 @@ export function appendRelate(
 
 /** Append a `confirm_relate` patch — a human affirmation of the edge (FR12). */
 export function appendConfirmRelate(from: string, rel: string, to: string): void {
+  requireMemoryEnabled();
   const patch: ConfirmRelatePatch = { op: 'confirm_relate', from, rel, to, ts: nowIso() };
   const file = graphPath();
   ensureDir(file);
@@ -219,6 +226,7 @@ export function appendConfirmRelate(from: string, rel: string, to: string): void
 
 /** Append an `unrelate` patch — a human reject / expiry of the edge (FR16). */
 export function appendUnrelate(from: string, rel: string, to: string): void {
+  requireMemoryEnabled();
   const patch: UnrelatePatch = { op: 'unrelate', from, rel, to, ts: nowIso() };
   const file = graphPath();
   ensureDir(file);
@@ -243,6 +251,7 @@ export function appendUnrelate(from: string, rel: string, to: string): void {
  * reimplement the append path). Does NOT touch entity_vec (edges aren't embedded).
  */
 export function appendResolvedRelate(patch: RelatePatch): void {
+  requireMemoryEnabled();
   const file = graphPath();
   ensureDir(file);
   // { ...patch, op:'relate' } — the patch already carries op:'relate'; spread-then-set is the same
@@ -489,6 +498,7 @@ export function confirmRelate(
   rel: string,
   to: string,
 ): RelatePatch | { error: string } {
+  requireMemoryEnabled();
   const e = resolveEdge(from, rel, to);
   if (!e) return { error: 'not_found' };
   if (e.confirmed === true) return { error: 'already_confirmed' };
@@ -506,6 +516,7 @@ export function rejectRelate(
   rel: string,
   to: string,
 ): RelatePatch | { error: string } {
+  requireMemoryEnabled();
   const e = resolveEdge(from, rel, to);
   if (!e) return { error: 'not_found' };
   if (e.valid_until !== null) return { error: 'already_rejected' };
@@ -523,6 +534,7 @@ export function rejectRelate(
  * patch and returns the updated record.
  */
 export function confirmEntity(id: string): EntityRecord | { error: string } {
+  requireMemoryEnabled();
   const existing = getEntity(id);
   if (existing === null) return { error: 'not_found' };
   if (existing.record.superseded_by !== null) return { error: 'not_found' };

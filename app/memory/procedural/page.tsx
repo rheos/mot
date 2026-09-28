@@ -1,3 +1,4 @@
+import { memoryDisabled } from '../../../lib/memory-control';
 import { listNotes, type ProceduralNote } from '../../../lib/procedural';
 import { ProceduralBrowser } from '../../../components/memory/ProceduralBrowser';
 import { MemoryNav } from '../../../components/memory/MemoryNav';
@@ -19,6 +20,9 @@ import { MemoryNav } from '../../../components/memory/MemoryNav';
 export const dynamic = 'force-dynamic';
 
 export default function ProceduralPage(): React.JSX.Element {
+  if (memoryDisabled()) {
+    return <main className="mx-auto max-w-5xl px-4 py-4">M.O.T. memory is disabled. Ticketing remains available.</main>;
+  }
   let confirmed: ProceduralNote[] = [];
   let pending: ProceduralNote[] = [];
   let error = false;

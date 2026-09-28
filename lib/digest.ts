@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 import { getDb } from '../db/client';
 import { nowIso } from './time';
 import { getTurnsForSession } from './conversation';
@@ -34,6 +35,7 @@ export interface DigestRow {
 // Upsert a session digest. One row per session_id — ON CONFLICT updates in place.
 // Sets ts = nowIso() on every write so re-runs of the digest update the timestamp.
 export function upsertDigest(payload: DigestPayload): DigestRow {
+  requireMemoryEnabled();
   const db = getDb();
   const ts = nowIso();
 
@@ -137,6 +139,7 @@ function formatTimeSpan(ms: number): string {
 export function structuralDigest(
   sessionId: string,
 ): DigestRow | { error: string; session_id: string } {
+  requireMemoryEnabled();
   const turns = getTurnsForSession(sessionId);
 
   if (turns.length === 0) {

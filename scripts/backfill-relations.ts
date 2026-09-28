@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from '../lib/memory-control';
 // scripts/backfill-relations.ts
 //
 // One-off RELATION backfill — the RESOLVE-OR-CREATE version.
@@ -264,6 +265,7 @@ export function linkRelationDraft(
 }
 
 async function main(argv: string[]): Promise<void> {
+  requireMemoryEnabled();
   const { dryRun, create, limit } = parseArgs(argv);
   migrate_db();
 

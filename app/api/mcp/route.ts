@@ -1,5 +1,6 @@
 import { apiKeyGuard, unauthorized } from '../../../lib/auth';
 import { callMcpTool, listMcpTools } from '../../../lib/mcp-tools';
+import { MemoryDisabledError, toolAvailable } from '../../../lib/memory-control';
 
 // ── MCP Streamable HTTP endpoint (protocol version 2024-11-05) ────────────────
 // Single POST handler for all JSON-RPC 2.0 messages. Auth: Bearer API key (same
@@ -60,6 +61,7 @@ export async function POST(req: Request): Promise<Response> {
         const p = params as { name?: string; arguments?: Record<string, unknown> };
         if (!p?.name) return rpcError(id ?? null, -32602, 'Missing tool name');
         const toolName = p.name;
+        if (!toolAvailable(toolName)) throw new MemoryDisabledError();
         const argKeys = Object.keys(p.arguments ?? {}).join(',');
         // eslint-disable-next-line no-console
         console.log(`[MOT/MCP] call: ${toolName}(${argKeys})`);
@@ -77,7 +79,9 @@ export async function POST(req: Request): Promise<Response> {
     if (method === 'tools/call') {
       const toolName = (params as { name?: string })?.name ?? 'unknown';
       // eslint-disable-next-line no-console
-      console.error(`[MOT/MCP] error: ${toolName}: ${message}`);
+      if (!(e instanceof MemoryDisabledError)) {
+        console.error(`[MOT/MCP] error: ${toolName}: ${message}`);
+      }
       return rpcResult(id ?? null, {
         content: [{ type: 'text', text: message }],
         isError: true,

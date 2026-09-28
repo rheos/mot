@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Track 1 limitation: conflict detection uses normalized label match only
 // (label_norm = lower(trim(label))). No semantic/token similarity.
 // Two facts about the same entity with different label wording (e.g. "Alex" vs
@@ -93,6 +94,7 @@ export function sharedKeyScalarContradiction(
 // ── Write path ────────────────────────────────────────────────────────────────
 
 export function writeMemory(input: WriteMemoryInput): WriteMemoryResult {
+  requireMemoryEnabled();
   // 1. Confidence range (belt-and-suspenders with the Zod schema at the API boundary).
   if (input.confidence < 0 || input.confidence > 1) {
     return { error: 'confidence must be between 0 and 1', confidence: input.confidence };

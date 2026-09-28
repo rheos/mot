@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadGraph, type EntityRecord } from './graph';
@@ -298,6 +299,7 @@ export function memoryProfile(section: 'full' | 'core' | 'synth' = 'full'): Memo
 }
 
 function writeAtomic(file: string, content: string): void {
+  requireMemoryEnabled();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, content);
@@ -322,6 +324,7 @@ export function profileWorker({
   dryRun: boolean;
   synthesize?: (prompt: string) => unknown;
 }): ProfileStatus {
+  requireMemoryEnabled();
   const status: ProfileStatus = {
     last_run: new Date().toISOString(),
     ok: true,

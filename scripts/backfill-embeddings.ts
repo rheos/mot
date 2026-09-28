@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from '../lib/memory-control';
 // Track 5, Phase 3 — historical embedding backfill (FR 15).
 //
 // A standalone operator script (run via `tsx`, NOT a Next.js route) that seeds sqlite-vec
@@ -224,6 +225,7 @@ export async function runBackfillEmbeddings(opts: {
   dryRun: boolean;
   concurrency: number;
 }): Promise<BackfillReport> {
+  requireMemoryEnabled();
   const db = getDb();
   const report: BackfillReport = {};
   for (const spec of storeSpecs()) {
@@ -240,6 +242,7 @@ export async function runBackfillEmbeddings(opts: {
 // The script entry point. Boots the DB + applies migrations (so the vec tables and the
 // extension are ready), gates on the extension + embedder, then reports (dry-run) or embeds.
 export async function main(argv: string[]): Promise<void> {
+  requireMemoryEnabled();
   const { dryRun, concurrency } = parseArgs(argv);
 
   // Boot the DB and apply migrations, same as the app does on start (instrumentation.ts calls

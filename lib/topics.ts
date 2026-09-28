@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Recallatron Phase 3 — topic threads (FR 1–5, FR 12–15, EC-2, EC-7, AC-2, AC-11, A-4, A-5).
 //
 // A topic thread is a human-readable grouping of sessions under a slug. topic_thread_session
@@ -37,6 +38,7 @@ export function createThread(
   | TopicThread
   | { error: 'slug_exists'; existing: TopicThread }
   | { error: 'invalid_slug'; slug: string } {
+  requireMemoryEnabled();
   if (!SLUG_RE.test(slug)) {
     return { error: 'invalid_slug', slug };
   }
@@ -69,6 +71,7 @@ export function linkThreadSession(
   slug: string,
   session_id: string,
 ): { ok: true } | { error: string; [k: string]: unknown } {
+  requireMemoryEnabled();
   const db = getDb();
 
   const thread = db
@@ -161,6 +164,7 @@ const MAX_SESSIONS = 50;
 const MAX_SUMMARY_CHARS = 40_000;
 
 export function summarizeThread(slug: string): SummarizeResult {
+  requireMemoryEnabled();
   const result = getThread(slug);
   if ('error' in result) {
     // getThread already returns { error: 'thread_not_found', slug }; pass it through (AC-4).
