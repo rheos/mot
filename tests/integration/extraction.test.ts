@@ -252,7 +252,7 @@ describe('Recallatron Track 3 Phase 3 — semantic dedup signal at extraction', 
     expect(first).toHaveLength(1);
     const firstId = first[0].id;
 
-    // "Alex Rivera" starts with "Alex" (len 6, ≥ 4). Edit distance is 7 (> 2), so the
+    // "Alex Rivera" starts with "Alex" (len 4, ≥ 4). Edit distance is 7 (> 2), so the
     // prefix gate — not the distance gate — is what catches this.
     await extractOne('Alex Rivera');
 
