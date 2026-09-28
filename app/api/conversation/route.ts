@@ -1,3 +1,4 @@
+import { memoryDisabled, memoryUnavailable } from '../../../lib/memory-control';
 import { apiKeyGuard, unauthorized } from '../../../lib/auth';
 import { internalError, parsePositiveInt } from '../../../lib/validation';
 import { logTurn, getRecentTurns, searchTurns, getTurnsForSession } from '../../../lib/conversation';
@@ -7,6 +8,7 @@ import { logTurn, getRecentTurns, searchTurns, getTurnsForSession } from '../../
 // Returns 201 + the saved turn.
 export async function POST(req: Request): Promise<Response> {
   if (!await apiKeyGuard(req)) return unauthorized();
+  if (memoryDisabled()) return memoryUnavailable();
 
   let body: unknown;
   try { body = await req.json(); } catch { return new Response('Bad JSON', { status: 400 }); }
@@ -35,6 +37,7 @@ export async function POST(req: Request): Promise<Response> {
 // GET /api/conversation?chat_id=X&q=term — FTS keyword search
 export async function GET(req: Request): Promise<Response> {
   if (!await apiKeyGuard(req)) return unauthorized();
+  if (memoryDisabled()) return memoryUnavailable();
 
   const { searchParams } = new URL(req.url);
   const sessionId = searchParams.get('session_id');

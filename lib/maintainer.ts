@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Recallatron Maintainer. The nightly memory-upkeep workers organize and connect memory but
 // never forget it. Every mutation is
 // additive/reversible; a Fact is never superseded, deleted, or rewritten by a worker.
@@ -42,6 +43,7 @@ import { identifyViaProvider } from './llm-provider';
 // call site (this file, lib/profile.ts, scripts/backfill-relations.ts) already imports as the
 // default `identify`/`synthesize` param — so swapping providers is zero call-site changes.
 export function identifyViaClaude(prompt: string): unknown {
+  requireMemoryEnabled();
   return identifyViaProvider(prompt);
 }
 
@@ -141,6 +143,7 @@ function statusFilePath(): string {
  * never leave a truncated status file. Creates the directory if absent.
  */
 export function writeStatus(status: MaintainerStatus): void {
+  requireMemoryEnabled();
   const file = statusFilePath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
@@ -279,6 +282,7 @@ export function resolutionWorker({
   dryRun: boolean;
   identify?: (prompt: string) => unknown;
 }): ResolutionStatus {
+  requireMemoryEnabled();
   const status: ResolutionStatus = {
     last_run: new Date().toISOString(),
     ok: true,
@@ -552,6 +556,7 @@ export function computeRepointedEdges(
  * the worker passes resolveGraphFile(), tests pass their temp path.
  */
 export function repointEdges(mergedAwayMap: Map<string, string>, graphFile: string): void {
+  requireMemoryEnabled();
   if (mergedAwayMap.size === 0) return;
   if (!fs.existsSync(graphFile)) return;
 
@@ -671,6 +676,7 @@ export function dedupWorker({
   dryRun: boolean;
   identify?: (prompt: string) => unknown;
 }): DedupStatus {
+  requireMemoryEnabled();
   const status: DedupStatus = {
     last_run: new Date().toISOString(),
     ok: true,
@@ -886,6 +892,7 @@ export function autoconfirmWorker({
   dryRun: boolean;
   now?: Date;
 }): AutoconfirmStatus {
+  requireMemoryEnabled();
   const status: AutoconfirmStatus = {
     last_run: now.toISOString(),
     ok: true,

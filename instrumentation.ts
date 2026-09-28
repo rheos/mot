@@ -29,7 +29,8 @@ export async function register(): Promise<void> {
   // native dep on a degraded box) logs and continues, never fails boot. The prod
   // fail-fast path for the vec EXTENSION lives in getDb()/loadVecExtension — that one
   // is intentionally NOT caught here.
-  if (process.env.MOT_EMBED_DISABLE !== '1') {
+  const { memoryDisabled } = await import('./lib/memory-control');
+  if (!memoryDisabled() && process.env.MOT_EMBED_DISABLE !== '1') {
     try {
       const { embed } = await import('./lib/embedding');
       // The success line is load-bearing for the ops runbook: CLAUDE.md tells the operator

@@ -1,3 +1,4 @@
+import { memoryDisabled, memoryUnavailable } from '../../../lib/memory-control';
 import { apiKeyGuard, unauthorized } from '../../../lib/auth';
 import { parsePositiveInt, internalError } from '../../../lib/validation';
 import { getActiveMemory } from '../../../lib/memory';
@@ -7,6 +8,7 @@ import { getActiveMemory } from '../../../lib/memory';
 // Returns [] when none — the active-only filter is applied inside getActiveMemory.
 export async function GET(req: Request): Promise<Response> {
   if (!await apiKeyGuard(req)) return unauthorized();
+  if (memoryDisabled()) return memoryUnavailable();
 
   const { searchParams } = new URL(req.url);
   const chatId = searchParams.get('chat_id');

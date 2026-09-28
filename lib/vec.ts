@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Track 5, Phase 1 — the sqlite-vec (vec0) table helpers (server-only; never imported by
 // Edge routes). All four vec tables share the same INSERT/DELETE/KNN shape; this module is
 // the single place that knows the sqlite-vec bind quirks so no caller has to.
@@ -59,6 +60,7 @@ export function vecInsert(
   f32: Float32Array,
   embedVersion: number = EMBED_VERSION,
 ): void {
+  requireMemoryEnabled();
   // vec0 INTEGER-PK bind trap: a plain JS number fails with "Only integers are allows for
   // primary key values". Coerce numbers to BigInt; TEXT-PK strings bind fine as-is.
   const key = typeof id === 'number' ? BigInt(id) : id;
@@ -82,6 +84,7 @@ export function vecMetaSet(
   id: number | string,
   embedVersion: number,
 ): void {
+  requireMemoryEnabled();
   db.prepare(
     `INSERT INTO vec_meta(table_name, row_id, embed_version) VALUES (?, ?, ?)
      ON CONFLICT(table_name, row_id) DO UPDATE SET embed_version = excluded.embed_version`,
@@ -121,6 +124,7 @@ export function vecReplace(
   f32: Float32Array,
   embedVersion: number = EMBED_VERSION,
 ): void {
+  requireMemoryEnabled();
   // DELETE-then-INSERT (portable across sqlite-vec versions; handles the re-digest EC 5 /
   // FR 8 case). DELETE-by-id accepts a plain number, so no coercion here. vecInsert stamps
   // vec_meta via upsert, so the old row's stale version cannot survive the replace.
@@ -129,6 +133,7 @@ export function vecReplace(
 }
 
 export function vecDelete(db: DB, table: string, id: number | string): void {
+  requireMemoryEnabled();
   db.transaction(() => {
     db.prepare(`DELETE FROM ${table} WHERE ${idColForTable(table)} = ?`).run(id);
     db.prepare(`DELETE FROM vec_meta WHERE table_name = ? AND row_id = ?`).run(table, String(id));

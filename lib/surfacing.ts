@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Track 7 — Proactive Surfacing (spec §Architecture D2–D5). The whole scan→filter→bucket→gate→
 // send→ledger pipeline, in one leaf module beside lib/procedural.ts / lib/maintainer.ts.
 //
@@ -91,6 +92,7 @@ export async function runSurfacing(opts?: {
   dryRun?: boolean;
   horizonDays?: number;
 }): Promise<SurfacingSummary> {
+  requireMemoryEnabled();
   const dryRun = opts?.dryRun === true;
   const horizonDays = opts?.horizonDays ?? 7; // the cron never overrides this ⇒ prod is a hard 2..7
 

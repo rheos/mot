@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from '../lib/memory-control';
 // Recallatron Phase 3 — historical backfill (Track 4, Prompt 5).
 //
 // A standalone operator script (run via `tsx`, NOT a Next.js route) that runs entity + procedural
@@ -98,6 +99,7 @@ export async function runBackfill(
   rows: DigestRow[],
   extractedSources: Set<string>,
 ): Promise<RealRunTally> {
+  requireMemoryEnabled();
   let processed = 0;
   let errored = 0;
   let skippedAlreadyExtracted = 0;
@@ -129,6 +131,7 @@ export async function runBackfill(
 // The script entry point. Boots the DB (getDb runs migrations on first open — db/client.ts), reads
 // the qualifying rows and the skip-set, then either reports (dry-run) or processes (real run).
 export async function main(argv: string[]): Promise<void> {
+  requireMemoryEnabled();
   const { dryRun, beforeDate } = parseArgs(argv);
 
   // Boot the DB and apply migrations, same as the app does on start (instrumentation.ts calls

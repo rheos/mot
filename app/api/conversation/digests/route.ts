@@ -1,3 +1,4 @@
+import { memoryDisabled, memoryUnavailable } from '../../../../lib/memory-control';
 import { apiKeyGuard, unauthorized } from '../../../../lib/auth';
 import { parsePositiveInt, internalError } from '../../../../lib/validation';
 import { getDigests } from '../../../../lib/digest';
@@ -6,6 +7,7 @@ import { getDigests } from '../../../../lib/digest';
 // Returns an array of session_digest rows (newest first). Returns [] when none — never 500 on empty.
 export async function GET(req: Request): Promise<Response> {
   if (!await apiKeyGuard(req)) return unauthorized();
+  if (memoryDisabled()) return memoryUnavailable();
 
   const { searchParams } = new URL(req.url);
   const chatId = searchParams.get('chat_id');

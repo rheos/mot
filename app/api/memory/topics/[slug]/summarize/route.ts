@@ -1,3 +1,4 @@
+import { memoryDisabled, memoryUnavailable } from '../../../../../../lib/memory-control';
 import {
   apiKeyGuard,
   unauthorized,
@@ -30,12 +31,13 @@ interface RouteContext {
 }
 
 export async function GET(req: Request, props: RouteContext): Promise<Response> {
-  const params = await props.params;
   const hasKey = await apiKeyGuard(req);
   const hasSession = await isSessionRequest(req);
   if (!hasKey && !hasSession) return unauthorized();
+  if (memoryDisabled()) return memoryUnavailable();
 
   try {
+    const params = await props.params;
     const { slug } = params;
     const result = summarizeThread(slug);
     // 200 even for { error: 'thread_not_found' } — the island branches on the body shape.

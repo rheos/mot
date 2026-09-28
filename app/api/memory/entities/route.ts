@@ -1,3 +1,4 @@
+import { memoryDisabled, memoryUnavailable } from '../../../../lib/memory-control';
 import {
   apiKeyGuard,
   unauthorized,
@@ -22,6 +23,7 @@ export async function GET(req: Request): Promise<Response> {
   const hasKey = await apiKeyGuard(req);
   const hasSession = await isSessionRequest(req);
   if (!hasKey && !hasSession) return unauthorized();
+  if (memoryDisabled()) return memoryUnavailable();
 
   try {
     const url = new URL(req.url);

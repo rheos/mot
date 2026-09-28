@@ -192,6 +192,7 @@ beforeEach(() => {
   runDeployDriftCheck.mockClear();
   runDeployDriftCheck.mockImplementation(async () => ({ ok: true, drifted: false }));
   delete process.env.MOT_GRAPH_PATH;
+  delete process.env.MOT_MEMORY_DISABLE;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
   delete process.env.MAINTAINER_AUTOCONFIRM_DISABLE;
@@ -205,6 +206,7 @@ afterEach(() => {
   logSpy.mockRestore();
   errSpy.mockRestore();
   delete process.env.MOT_GRAPH_PATH;
+  delete process.env.MOT_MEMORY_DISABLE;
   delete process.env.MAINTAINER_RESOLUTION_DISABLE;
   delete process.env.MAINTAINER_DEDUP_DISABLE;
   delete process.env.MAINTAINER_AUTOCONFIRM_DISABLE;
@@ -217,6 +219,40 @@ function loggedLines(): string[] {
 }
 
 describe('scheduleNightly — nightly maintenance (persistence: no disuse prune)', () => {
+  it('memory-only disable preserves drift and both backups, but skips all memory jobs', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { getDb } = await import('../../db/client');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mot-disabled-nightly-'));
+    const src = path.join(dir, 'graph.jsonl');
+    fs.writeFileSync(src, 'synthetic graph backup fixture\n');
+    process.env.MOT_GRAPH_PATH = src;
+    const previousBackupPath = process.env.BACKUP_PATH;
+    process.env.BACKUP_PATH = path.join(dir, 'backups');
+    const exec = vi.fn();
+    vi.mocked(getDb).mockReturnValueOnce({ exec } as never);
+    try {
+      // Flip after registration: callbacks must read the runtime switch, not a
+      // boot-time copy. Surfacing remains skipped even when separately enabled.
+      scheduleNightly();
+      process.env.MOT_MEMORY_DISABLE = '1';
+      process.env.SURFACING_ENABLE = '1';
+      await scheduledCallbacks['0 2 * * *']();
+      await scheduledCallbacks['0 8 * * *']();
+      expect(runDeployDriftCheck).toHaveBeenCalledOnce();
+      expect(exec).toHaveBeenCalledWith(expect.stringContaining('VACUUM INTO'));
+      expect(fs.readFileSync(path.join(dir, 'backups', 'graph.jsonl'), 'utf8')).toBe('synthetic graph backup fixture\n');
+      for (const job of [compactGraph, resolutionWorker, dedupWorker, autoconfirmWorker, profileWorker, runSurfacing, reportWorkerHealth]) {
+        expect(job).not.toHaveBeenCalled();
+      }
+    } finally {
+      if (previousBackupPath === undefined) delete process.env.BACKUP_PATH;
+      else process.env.BACKUP_PATH = previousBackupPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does NOT disuse-prune — no procedural/entity prune lines are emitted; compaction still runs', async () => {
     // Absent file → compact takes the skip branch (no real graph needed) but still emits its line.
     process.env.MOT_GRAPH_PATH = '/nonexistent/mot-nightly-test/graph.jsonl';

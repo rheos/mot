@@ -1,4 +1,5 @@
 import { schedule } from 'node-cron';
+import { memoryDisabled } from './memory-control';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getDb } from '../db/client';
@@ -86,6 +87,13 @@ export function scheduleNightly(): void {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('[MOT] Graph backup failed:', e);
+    }
+
+    // Keep drift checks and both backups active in ticket-only mode. No memory
+    // maintenance, status writes, or memory-failure alerts should follow.
+    if (memoryDisabled()) {
+      console.log('[MOT/nightly] memory disabled — maintenance skipped');
+      return;
     }
 
     // ── Nightly Recallatron maintenance ─────────────────────────────────────────
@@ -214,6 +222,7 @@ export function scheduleNightly(): void {
   schedule(
     `0 ${sendHour} * * *`,
     async () => {
+      if (memoryDisabled()) return;
       try {
         await runSurfacing({ dryRun: false });
       } catch (e) {

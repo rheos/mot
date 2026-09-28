@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 // Recallatron Phase 4 — the post-digest extraction pass (FR 16–19, EC-4/5/6, A-1/A-6, AC-4/7/8).
 //
 // Pure deterministic TypeScript. Runs in-process AFTER upsertDigest() persists a digest row;
@@ -344,6 +345,7 @@ function processRelations(digestRow: DigestRow): void {
  * body itself is synchronous (better-sqlite3 + appendFileSync are sync).
  */
 export async function runExtraction(digestRow: DigestRow): Promise<void> {
+  requireMemoryEnabled();
   if (digestRow.parse_error !== 0) return; // EC-4, A-1 — parse_error is the 0/1 raw integer.
   // FR10 — a relation-only digest (edges between already-known entities, no new entity or
   // procedural draft) must still run, so relation_draft is part of the all-null guard.

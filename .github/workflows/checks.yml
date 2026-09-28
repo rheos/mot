@@ -90,3 +90,6 @@ jobs:
             30*) ;;
             *) echo "::error::/ returned $gated, expected a 3xx redirect to /login"; exit 1 ;;
           esac
+
+      - name: Ticket-only runtime smoke test
+        run: node tests/smoke/memory-disabled.mjs

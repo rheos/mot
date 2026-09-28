@@ -32,6 +32,8 @@ Open [http://localhost:3399](http://localhost:3399).
 
 Before exposing the application beyond a local development machine, set strong values for `MOT_UI_PASSWORD` and `MOT_SESSION_SECRET`. Set `MOT_API_KEY` when agents or automations need API access. The default database path is `./mot.db`.
 
+The optional memory-only shutdown setting is shown in [config/memory-control.example](config/memory-control.example). Add it to your private runtime environment only when needed; leaving it absent or at `0` preserves normal operation. Follow [the activation checklist](docs/memory-disable.md) before enabling it.
+
 ## Checks
 
 ```bash
@@ -44,6 +46,8 @@ npm run build
 ## Operating boundary
 
 M.O.T. is designed for a single trusted operator, not as a multi-tenant service. Runtime data, environment files, model caches, private operator notes, and backups are ignored by git. Production deployments should add their own TLS, access controls, backup policy, and secret management at the hosting boundary.
+
+For a memory cutover, `MOT_MEMORY_DISABLE=1` runs M.O.T. in ticket-only mode without deleting existing memory. It is off by default and requires a stop/drain/restart boundary; see [the operator checklist](docs/memory-disable.md).
 
 ## License
 

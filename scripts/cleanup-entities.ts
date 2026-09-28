@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from '../lib/memory-control';
 // scripts/cleanup-entities.ts
 //
 // One-off entity-graph cleanup that unblocks relations by making the entities linkable:
@@ -33,6 +34,7 @@ function graphPath(): string {
 }
 
 function main(argv: string[]): void {
+  requireMemoryEnabled();
   const dryRun = argv.includes('--dry-run');
   const file = graphPath();
 

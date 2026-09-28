@@ -1,0 +1,4 @@
+# Optional runtime environment setting; inactive by default if omitted.
+# Do not activate without an approved stop/drain/restart boundary.
+# See docs/memory-disable.md. Ticketing and backups remain enabled.
+MOT_MEMORY_DISABLE=0

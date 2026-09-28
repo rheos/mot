@@ -1,3 +1,4 @@
+import { requireMemoryEnabled } from './memory-control';
 import { getDb } from '../db/client';
 import { ftsQuery } from './fts';
 import { indexAsync, vecKnn, vecAvailable } from './vec';
@@ -54,6 +55,7 @@ export interface LogTurnResult extends Turn {
 }
 
 export function logTurn(chatId: string, role: 'user' | 'rheo', content: string): LogTurnResult {
+  requireMemoryEnabled();
   const db = getDb();
   const now = new Date();
   const { sessionId, closedSessionId, prevContent } = resolveSessionId(chatId, now);

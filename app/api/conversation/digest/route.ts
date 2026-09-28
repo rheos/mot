@@ -1,3 +1,4 @@
+import { memoryDisabled, memoryUnavailable } from '../../../../lib/memory-control';
 import { apiKeyGuard, unauthorized } from '../../../../lib/auth';
 import { parsePositiveInt, internalError } from '../../../../lib/validation';
 import { upsertDigest } from '../../../../lib/digest';
@@ -8,6 +9,7 @@ import { runExtraction } from '../../../../lib/extraction';
 // Accepts: { session_id, summary, turn_count, chat_id, topics?, entity_draft?, procedural_raw?, parse_error? }
 export async function POST(req: Request): Promise<Response> {
   if (!await apiKeyGuard(req)) return unauthorized();
+  if (memoryDisabled()) return memoryUnavailable();
 
   let body: unknown;
   try { body = await req.json(); } catch { return new Response('Bad JSON', { status: 400 }); }

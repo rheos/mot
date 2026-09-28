@@ -10,6 +10,7 @@
 // accepts either ArrayLike and always yields a real Float32Array.
 
 import { EmbeddingModel, FlagEmbedding } from 'fastembed';
+import { memoryDisabled } from './memory-control';
 
 // Memoized init promise — resolve once, reuse on every embed call. On failure the promise is
 // cleared so the next call can retry (a transient download hiccup shouldn't wedge the model).
@@ -36,9 +37,9 @@ function getModel(): Promise<FlagEmbedding> {
 }
 
 // Lazy per-call env read (same pattern as MOT_GRAPH_PATH at graph.ts) so tests can flip the
-// switch after import. This is the single global off-switch for embedding.
+// switch after import. Memory shutdown also suppresses all embedding work.
 export function embeddingEnabled(): boolean {
-  return process.env.MOT_EMBED_DISABLE !== '1';
+  return !memoryDisabled() && process.env.MOT_EMBED_DISABLE !== '1';
 }
 
 // Memoized final boolean — a second call after an init failure short-circuits to false

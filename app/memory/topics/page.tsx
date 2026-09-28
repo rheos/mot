@@ -1,3 +1,4 @@
+import { memoryDisabled } from '../../../lib/memory-control';
 import { listThreads, type TopicThreadWithCount } from '../../../lib/topics';
 import { TopicBrowser } from '../../../components/memory/TopicBrowser';
 import { MemoryNav } from '../../../components/memory/MemoryNav';
@@ -17,6 +18,9 @@ import { MemoryNav } from '../../../components/memory/MemoryNav';
 export const dynamic = 'force-dynamic';
 
 export default function TopicsPage(): React.JSX.Element {
+  if (memoryDisabled()) {
+    return <main className="mx-auto max-w-5xl px-4 py-4">M.O.T. memory is disabled. Ticketing remains available.</main>;
+  }
   let threads: TopicThreadWithCount[] = [];
   let error = false;
 
