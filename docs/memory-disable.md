@@ -3,6 +3,9 @@
 `MOT_MEMORY_DISABLE=1` disables M.O.T.'s memory subsystem while keeping the
 operations desk running. Only the exact value `1` activates it. An absent value
 or `0` preserves normal behavior. Deploying this code does **not** activate it.
+An allowed, non-secret configuration sample is in
+[config/memory-control.example](../config/memory-control.example); keep actual
+runtime values in the private deployment environment, never in version control.
 
 When active:
 
