@@ -177,7 +177,7 @@ describe('entity tools', () => {
     schoolId = school.id;
     const alex = appendEntity({
       type: 'Person',
-      label: 'Alex Goodwin',
+      label: 'Alex Rivera',
       properties: {},
       valid_from: '2026-01-01T00:00:00.000Z',
       valid_until: null,
@@ -208,7 +208,7 @@ describe('entity tools', () => {
   it('entity_search returns matching active entities (happy path)', async () => {
     const result = await call('entity_search', { q: 'Alex' });
     expect(Array.isArray(result)).toBe(true);
-    expect((result as { label: string }[]).some((e) => e.label === 'Alex Goodwin')).toBe(true);
+    expect((result as { label: string }[]).some((e) => e.label === 'Alex Rivera')).toBe(true);
   });
 
   it('entity_search for a non-match returns [] (no throw)', async () => {

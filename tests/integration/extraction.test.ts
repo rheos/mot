@@ -252,11 +252,11 @@ describe('Recallatron Track 3 Phase 3 — semantic dedup signal at extraction', 
     expect(first).toHaveLength(1);
     const firstId = first[0].id;
 
-    // "Alex Goodwin" starts with "Alex" (len 6, ≥ 4). Edit distance is 8 (> 2), so the
+    // "Alex Rivera" starts with "Alex" (len 4, ≥ 4). Edit distance is 7 (> 2), so the
     // prefix gate — not the distance gate — is what catches this.
-    await extractOne('Alex Goodwin');
+    await extractOne('Alex Rivera');
 
-    const second = searchEntities('', 'Person').find((e) => e.label === 'Alex Goodwin')!;
+    const second = searchEntities('', 'Person').find((e) => e.label === 'Alex Rivera')!;
     expect(second.properties.probable_duplicate_of).toContain(firstId);
   });
 
@@ -310,8 +310,8 @@ describe('levenshtein edit distance (lib/levenshtein)', () => {
     expect(levenshtein('alica', 'alice')).toBe(1);
   });
 
-  it('"Alex" vs "Alex Goodwin" → 8 (caught by prefix, not distance)', () => {
-    expect(levenshtein('alex', 'alex goodwin')).toBe(8);
+  it('"Alex" vs "Alex Rivera" → 7 (caught by prefix, not distance)', () => {
+    expect(levenshtein('alex', 'alex rivera')).toBe(7);
   });
 });
 
