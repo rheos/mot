@@ -21,6 +21,22 @@ updates:
         patterns: ["*"]
         exclude-patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
         update-types: ["minor", "patch"]
+    ignore:
+      # better-sqlite3 13 cannot be installed by the Coolify/Nixpacks build.
+      # 13.x bundles N-API prebuilds and sets "gypfile": false, but npm 10.9.2
+      # (bundled with prod's Node 22.14) and npm 11 ignore that flag whenever a
+      # lockfile is present, and run `node-gyp rebuild`, which needs Python
+      # and a compiler the Nixpacks image lacks. CI passes because GitHub's
+      # runner has both. npm 12 honours the flag. #23 shipped this, broke
+      # every deploy, and was reverted in #61; options for landing it in #60.
+      # 12.x still installs via prebuild-install and is not blocked.
+      - dependency-name: "better-sqlite3"
+        versions: [">=13"]
+      # Tailwind 4 is a migration (PostCSS plugin moved to
+      # @tailwindcss/postcss, CSS-first config, renamed utilities), not a
+      # bump. Tracked in #77; remove this once that lands.
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
