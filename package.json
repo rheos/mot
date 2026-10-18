@@ -2,7 +2,7 @@
   "name": "mot",
   "version": "0.1.0",
   "engines": {
-    "node": ">=22.14 <23"
+    "node": "24.x"
   },
   "private": true,
   "scripts": {
