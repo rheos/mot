@@ -41,7 +41,7 @@
     "@types/node-cron": "^3.0.11",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@vitest/runner": "^1.6.1",
+    "@vitest/runner": "^4.1.11",
     "autoprefixer": "^10.6.1",
     "drizzle-kit": "^0.31.11",
     "playwright": "^1.60.0",
