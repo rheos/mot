@@ -1,13 +1,10 @@
 # Type check, tests and build on every PR, so a dependency bump has a real
 # signal instead of only a bot's opinion.
 #
-# Node comes from .nvmrc, which holds the version the deployed container
-# runs: 24, the one Node version across Robin's repos (2026-10-18). Coolify
-# builds mot with Nixpacks and NIXPACKS_NODE_VERSION, which must say 24 too.
-# The exact patch Nixpacks picks moves over time, so check with
-# `docker exec <mot container> node -v` on the box before trusting it. Keep
-# .nvmrc and the Coolify env var in step; package.json `engines` records the
-# same major.
+# Node comes from .nvmrc: 24, the one Node version across Robin's repos
+# (2026-10-18). Production builds this repo's Dockerfile (node:24-bookworm-slim)
+# on Coolify, so keep the Dockerfile's major, .nvmrc and package.json `engines`
+# in step. Check the live patch with `docker exec <mot container> node -v`.
 #
 # There is no lint step: ESLint was never configured here, and the two eslint
 # packages were dropped once it was clear nothing read them.

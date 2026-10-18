@@ -1,0 +1,15 @@
+.git
+.github
+.bureau
+node_modules
+.next
+.model-cache
+backups
+mot.db
+mot.db-*
+*.db
+.env
+.env.*
+!.env.local.example
+test-results
+playwright-report
