@@ -19,11 +19,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.283",
-    "@node-rs/argon2": "^2.2.1",
+    "@anthropic-ai/claude-code": "2.1.302",
+    "@node-rs/argon2": "^2.2.2",
     "@paralleldrive/cuid2": "^3.3.0",
     "better-sqlite3": "^11.10.0",
-    "drizzle-orm": "^0.45.3",
+    "drizzle-orm": "^0.45.4",
     "fastembed": "^2.1.0",
     "iron-session": "^9.0.1",
     "lucide-react": "^0.525.0",
@@ -32,10 +32,10 @@
     "react": "^19",
     "react-dom": "^19",
     "sqlite-vec": "^0.1.9",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.19.43",
     "@types/node-cron": "^3.0.11",
@@ -45,7 +45,7 @@
     "autoprefixer": "^10.6.1",
     "drizzle-kit": "^0.31.11",
     "playwright": "^1.60.0",
-    "postcss": "^8.5.28",
+    "postcss": "^8.5.30",
     "tailwindcss": "^3.4.19",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
