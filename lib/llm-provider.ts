@@ -1,7 +1,7 @@
 // The Maintainer LLM provider seam (novadiem-engineering standard 14 — never hard-wire a model or
 // provider SDK into pipeline code). lib/maintainer.ts's identifyViaClaude used to spawn `claude -p`
 // directly; that hard-wire is why the nightly workers went silently dark on 2026-08-13 — the MOT
-// Coolify container (nixpacks build, no Dockerfile in this repo) has neither the `claude` binary nor
+// Coolify container (a nixpacks build at the time) has neither the `claude` binary nor
 // any credentials, so spawnSync returned status:null and every batch failed the same way for weeks.
 //
 // Two backends, selected by MAINTAINER_LLM_PROVIDER (read at CALL time, so it's tunable in Coolify

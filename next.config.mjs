@@ -26,8 +26,8 @@ const nextConfig = {
   // logs "next start does not work with output: standalone"), so old pages serve but a new route
   // 404s. The container gets full node_modules from the build's `npm ci`, so the self-contained
   // bundle bought nothing here anyway.
-  // The container command is `npm start -- -H 0.0.0.0 -p 3100`, run by Coolify from the Nixpacks
-  // image. (This used to be a systemd mot.service on Lightsail; that host is gone, so do not go
+  // The container command is `npm start -- -H 0.0.0.0 -p 3100`, the CMD of this repo's
+  // Dockerfile, which Coolify builds. (This used to be a systemd mot.service on Lightsail; that host is gone, so do not go
   // looking for an ExecStart to edit.) If this is ever switched back to standalone, the start
   // command MUST switch to `node .next/standalone/server.js` and the build MUST copy
   // .next/static + public into it.
