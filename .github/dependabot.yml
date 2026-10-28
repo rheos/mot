@@ -17,10 +17,25 @@ updates:
       # by accident.
       react-toolchain:
         patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+      # vitest and any @vitest/* package must share one version. #80 and #81
+      # split them: @vitest/runner sat in package.json as a stray devDependency
+      # that nothing imported (vitest 5 no longer even depends on it), so
+      # Dependabot bumped each on its own. The stray is gone; this group keeps
+      # the next @vitest/* addition (coverage-v8, ui) moving with vitest.
+      # vite is listed for the day it is declared directly; today it is only
+      # vitest's dependency, so the pattern matches nothing.
+      vitest-toolchain:
+        patterns: ["vitest", "@vitest/*", "vite"]
       javascript-minor-and-patch:
         patterns: ["*"]
-        exclude-patterns: ["react", "react-dom", "@types/react", "@types/react-dom"]
+        exclude-patterns: ["react", "react-dom", "@types/react", "@types/react-dom", "vitest", "@vitest/*", "vite"]
         update-types: ["minor", "patch"]
+    ignore:
+      # Tailwind 4 is a migration (PostCSS plugin moved to
+      # @tailwindcss/postcss, CSS-first config, renamed utilities), not a
+      # bump. Tracked in #77; remove this once that lands.
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

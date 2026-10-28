@@ -21,6 +21,11 @@ function fakeResponse(status: number): Response {
 
 type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
+// Typed through the implementation, not through vi.fn's type arguments: those changed shape
+// between vitest 1 (vi.fn<Args, Return>) and vitest 2+ (vi.fn<Fn>), and this form compiles
+// on both.
+const okFetch: FetchFn = async () => fakeResponse(200);
+
 beforeEach(() => {
   process.env.TELEGRAM_BOT_TOKEN = BOT_TOKEN;
   process.env.TELEGRAM_ALLOWED_USER = CHAT_ID;
@@ -79,9 +84,7 @@ describe('notify_robin: tool registration', () => {
 describe('notify_robin: truncation (FR-7, AC-8)', () => {
   // The helper is private; we observe its effect through the body sent to fetch.
   async function sentBody(text: string): Promise<string> {
-    const fetchMock = vi.fn<Parameters<FetchFn>, ReturnType<FetchFn>>(async () =>
-      fakeResponse(200),
-    );
+    const fetchMock = vi.fn(okFetch);
     vi.stubGlobal('fetch', fetchMock);
     const res = await callMcpTool('notify_robin', { text });
     expect(res).toEqual([{ type: 'text', text: 'ok' }]);
@@ -151,9 +154,7 @@ describe('notify_robin: missing credentials throw (isError path)', () => {
 
 describe('notify_robin: send + retry', () => {
   it('returns ok on a first-try 200 and POSTs plain text with no parse_mode (T-5)', async () => {
-    const fetchMock = vi.fn<Parameters<FetchFn>, ReturnType<FetchFn>>(async () =>
-      fakeResponse(200),
-    );
+    const fetchMock = vi.fn(okFetch);
     vi.stubGlobal('fetch', fetchMock);
 
     const res = await callMcpTool('notify_robin', { text: 'hello' });
